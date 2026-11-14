@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffe3ee">
+<title>Candy Conga</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #ffe3ee; --panel: #fff7fb; --btn: #ffd1e3; --text: #4a2040; --muted: #8a5a7c; --pink: #ff4d8d; --mint: #2ec98a; --gold: #ffb020; --line: #ff9cc2; }
+  /* No scrolling, pinch/double-tap zoom, pull-to-refresh, text selection or long-press menu while playing on a phone. */
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+    touch-action: none; overscroll-behavior: none;
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    font: 500 16px/1.4 Fredoka, system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text);
+  }
+  /* Menus are plain HTML on top of the game canvas: real buttons are easy to tap, style, and use with a keyboard. */
+  #ui { position: fixed; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgb(255 227 238 / .7); }
+  #ui[hidden], .screen[hidden] { display: none; }
+  .fixed[hidden] { display: none !important; } /* beats #swapBtn's display: flex */
+  .screen { width: min(380px, 100%); max-height: 100%; overflow-y: auto; touch-action: pan-y; box-sizing: border-box; background: var(--panel); border: 3px solid var(--line); border-radius: 22px; padding: 22px; display: flex; flex-direction: column; gap: 12px; text-align: center; box-shadow: 0 8px 0 var(--line), 0 12px 30px rgb(255 77 141 / .25); }
+  h1, h2 { font-weight: 700; margin: 0 0 4px; line-height: 1.1; }
+  h1 { font-size: 2.6rem; color: var(--pink); text-shadow: 3px 3px 0 #ffd23b; letter-spacing: .02em; }
+  h2 { font-size: 1.5rem; color: var(--pink); }
+  .screen p { margin: 0; color: var(--muted); }
+  button { font: inherit; font-size: 1.1rem; min-height: 48px; border: 0; border-radius: 14px; background: var(--btn); color: var(--text); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button.primary { background: var(--pink); color: #fff; font-weight: 700; box-shadow: 0 4px 0 #c92a66; }
+  button:hover { filter: brightness(1.05); }
+  button:active { transform: translateY(2px); }
+  button:disabled { opacity: .45; cursor: default; filter: none; transform: none; }
+  button:focus-visible, .row:has(input:focus-visible) { outline: 3px solid var(--mint); outline-offset: 2px; }
+  a { color: var(--pink); padding: 8px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 48px; padding: 0 14px; background: var(--btn); border-radius: 14px; cursor: pointer; }
+  .row input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--pink); }
+  .hint { font-size: .9rem; }
+  .big { font-size: 1.3rem; color: var(--text) !important; }
+  .stars { font-size: 2.2rem; letter-spacing: .1em; color: var(--gold); line-height: 1; }
+  .stars .off { color: #e8cbd8; }
+  .pair { display: flex; gap: 8px; }
+  .pair button { flex: 1; }
+  /* Levels grid */
+  .levels { width: min(440px, 100%); }
+  #levelGrid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  #levelGrid button { min-height: 56px; padding: 4px 0; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 1.05rem; line-height: 1.1; }
+  #levelGrid button small { font-size: .7rem; color: var(--gold); letter-spacing: .05em; }
+  #levelGrid button.next { background: var(--pink); color: #fff; }
+  #levelGrid button.next small { color: #fff; }
+  /* Power-up pick */
+  #pickCards { display: flex; flex-direction: column; gap: 8px; }
+  .card { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; text-align: left; }
+  .card b { font-size: 1.15rem; color: var(--pink); }
+  .card small { color: var(--muted); font-size: .9rem; }
+  /* Fixed buttons over the game: pause (top right) and swap (bottom, under your thumb). */
+  .fixed { position: fixed; z-index: 1; }
+  #pauseBtn { top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); width: 48px; padding: 0; opacity: .9; font-size: 1rem; }
+  #swapBtn { left: 50%; transform: translateX(-50%); bottom: max(10px, env(safe-area-inset-bottom)); min-width: 132px; height: 56px; padding: 0 16px; display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 1.3rem; opacity: .95; box-shadow: 0 4px 0 var(--line); }
+  #swapBtn:active { transform: translateX(-50%) translateY(2px); }
+  .dot { width: 26px; height: 26px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 2px rgb(0 0 0 / .12); background: #ccc; }
+  .dot.sel { width: 34px; height: 34px; }
+  .dot.wild { background: conic-gradient(#ff4d6d, #ffc93c, #2ec98a, #3d8bff, #9b5cff, #ff8a2b, #ff4d6d) !important; }
+  .dot.jaw { background: #8a8fa3 !important; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
+</head>
+<body>
+<div id="ui">
+  <section class="screen" id="main">
+    <h1>CANDY<br>CONGA</h1>
+    <p>Candies dance down the road to the hungry monsters. Pop them in threes before they get there!</p>
+    <p class="big" id="mainStars"></p>
+    <p id="mainBest"></p>
+    <button class="primary" data-action="play" id="playBtn">Play</button>
+    <div class="pair">
+      <button data-action="levels">Levels</button>
+      <button data-action="gauntlet">Gauntlet</button>
+    </div>
+    <button data-action="settings">Settings</button>
+    <a href="../">&larr; Back to Arcade</a>
+  </section>
+
+  <section class="screen levels" id="levels" hidden>
+    <h2>LEVELS</h2>
+    <p class="hint">Clear a level to unlock the next. Keep all 3 stars for a perfect rating.</p>
+    <div id="levelGrid"></div>
+    <button data-action="menu">Back</button>
+  </section>
+
+  <section class="screen" id="gauntletInfo" hidden>
+    <h2>GAUNTLET</h2>
+    <p>Every level, one after another, with just <b>3 stars</b> for the whole climb. Every candy a monster eats costs one. How far can you get?</p>
+    <p id="gauntletBest"></p>
+    <button class="primary" data-action="startGauntlet">Start the climb</button>
+    <button data-action="menu">Back</button>
+  </section>
+
+  <section class="screen" id="settings" hidden>
+    <h2>SETTINGS</h2>
+    <label class="row">Sound <input type="checkbox" id="sound"></label>
+    <label class="row">Aim guide <input type="checkbox" id="aimGuide"></label>
+    <p class="hint">How to play: touch anywhere and drag to aim, let go to shoot. Tap the gumball machine (or the button at the bottom, or press Space) to swap your two candies. On a computer, aim with the mouse and click.</p>
+    <button data-action="back">Back</button>
+  </section>
+
+  <section class="screen" id="pause" hidden>
+    <h2>PAUSED</h2>
+    <p id="pauseInfo"></p>
+    <button class="primary" data-action="resume">Resume</button>
+    <button data-action="settings">Settings</button>
+    <button data-action="menu">Main menu</button>
+  </section>
+
+  <section class="screen" id="pick" hidden>
+    <h2>SWEET COMBO!</h2>
+    <p>Pick a power-up. It lasts until the end of this level.</p>
+    <div id="pickCards"></div>
+  </section>
+
+  <section class="screen" id="clear" hidden>
+    <h2 id="clearTitle">LEVEL CLEAR!</h2>
+    <div class="stars" id="clearStars"></div>
+    <p class="big" id="clearScore"></p>
+    <p id="clearBest"></p>
+    <button class="primary" data-action="next">Next level</button>
+    <div class="pair">
+      <button data-action="replay">Replay</button>
+      <button data-action="levels">Levels</button>
+    </div>
+  </section>
+
+  <section class="screen" id="failed" hidden>
+    <h2>OUT OF STARS</h2>
+    <p id="failedText"></p>
+    <button class="primary" data-action="replay">Try again</button>
+    <div class="pair">
+      <button data-action="levels">Levels</button>
+      <button data-action="menu">Main menu</button>
+    </div>
+  </section>
+
+  <section class="screen" id="over" hidden>
+    <h2>GAUNTLET OVER</h2>
+    <p class="big" id="overScore"></p>
+    <p id="overText"></p>
+    <button class="primary" data-action="startGauntlet">Play again</button>
+    <button data-action="menu">Main menu</button>
+  </section>
+</div>
+<button class="fixed" id="pauseBtn" aria-label="Pause" hidden>&#10074;&#10074;</button>
+<button class="fixed" id="swapBtn" aria-label="Swap candies" hidden><span class="dot sel" id="dot0"></span>&#8644;<span class="dot" id="dot1"></span></button>
+
+<script src="js/data.js"></script>
+<script src="js/levels.js"></script>
+<script src="js/chain.js"></script>
+<script src="js/art.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
