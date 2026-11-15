@@ -17,10 +17,13 @@ const check = (name, ok, detail = '') => {
 
 // Installed in the page: step the game a frame at a time (much faster than real time), and a bot that keeps the
 // Licorice Laser on so every shot lands exactly where it aims, and aims at candies its color can match.
+// The game stops running on its own clock: __step(n) runs n frames of 1/60 s, then draws one.
 function installHarness() {
-  window.__T = performance.now();
-  window.__step = n => { for (let i = 0; i < n; i++) { __T += 1000 / 60; game.step(__T, 1000 / 60); } };
-  window.__fix = () => { scene().tweens.getDelta = () => 1000 / 60; }; // tweens normally follow the wall clock
+  game.manual = true;
+  window.__step = n => { for (let i = 0; i < n; i++) if (app.state !== 'paused') game.update(1 / 60); game.render(); };
+  // Run frames until expr is false, drawing only the last: software WebGL (no GPU here) can't keep up with a frame
+  // drawn per step, and screenshots then time out waiting for it.
+  window.__while = (expr, max) => { const go = new Function(`return ${expr}`); for (let i = 0; i < max && go(); i++) game.update(1 / 60); game.render(); };
   window.__orbs = () => scene().board.chains.reduce((a, ch) => a + ch.orbs.length, 0);
   window.__botShot = () => {
     const s = scene(), b = s.board;
@@ -45,19 +48,19 @@ function installHarness() {
     const p = pointAt(best.ch.track, best.o.s);
     s.fireAt(p.x, p.y);
   };
-  // Play until expr is true (or the level ends), picking the first power-up whenever the meter fills.
+  // Play until expr is true (or the level ends). Power-ups from combos take effect on their own.
   window.__bot = (expr, maxSeconds) => {
     const until = new Function(`return ${expr}`);
     for (let f = 0; f < maxSeconds * 60 && !until(); f++) {
-      if (app.state === 'pick') { document.querySelector('#pickCards button').click(); continue; }
       if (app.state !== 'playing') break;
       __botShot();
-      __step(1);
+      game.update(1 / 60);
     }
+    game.render();
     return until();
   };
   // Game coordinates -> page coordinates (for real taps and clicks).
-  window.__screen = (x, y) => { const r = game.canvas.getBoundingClientRect(); return { x: r.left + x * r.width / W, y: r.top + y * r.height / H }; };
+  window.__screen = (x, y) => game.toScreen(x, y);
 }
 
 const visible = (page, id) => page.evaluate(i => !document.getElementById(i).hidden && !document.getElementById('ui').hidden, id);
@@ -71,8 +74,7 @@ async function run(browser, name, options, full) {
   page.on('console', m => { if (m.type() === 'error') errors.push(`${m.text()} ${m.location()?.url ?? ''}`.trim()); });
   // After fast-forwarding, the game's real clock would try to catch up minutes at once and stall the next painted
   // frame; resetting it first keeps screenshots quick.
-  const shot = file => page.evaluate(() => game.loop.resetDelta())
-    .then(() => page.screenshot({ path: path.join(out, `${name}-${file}.png`), timeout: 15000 }))
+  const shot = file => page.screenshot({ path: path.join(out, `${name}-${file}.png`), timeout: 30000 })
     .catch(e => check(`${name}: screenshot ${file}`, false, e.message.split('\n')[0]));
   const tap = async (x, y) => {
     const p = await page.evaluate(([x, y]) => __screen(x, y), [x, y]);
@@ -80,13 +82,13 @@ async function run(browser, name, options, full) {
   };
   const start = async (mode, level, carry) => {
     await page.evaluate(([m, n, c]) => { startLevel(m, n, c); }, [mode, level, carry]);
-    await page.evaluate(() => { __step(1); __fix(); });
+    await page.evaluate(() => __step(1));
   };
 
   await page.goto(url);
-  await page.waitForFunction(() => typeof scene === 'function' && !!scene() && !!scene().board, null, { timeout: 15000 });
+  await page.waitForFunction(() => typeof scene === 'function' && !!scene()?.board, null, { timeout: 30000 });
   await page.evaluate(installHarness);
-  await page.evaluate(() => { __fix(); __step(120); }); // let the menu backdrop roll in
+  await page.evaluate(() => __step(120)); // let the menu backdrop roll in
   check(`${name}: main menu on load`, await visible(page, 'main'));
   check(`${name}: Back to Arcade link`, await page.evaluate(() => !!document.querySelector('#main a[href="../"]')));
   await shot('01-menu');
@@ -97,7 +99,7 @@ async function run(browser, name, options, full) {
   check(`${name}: levels grid lists 100 levels, 1 open and 2 locked`, grid.count === 100 && grid.one && grid.two, JSON.stringify(grid));
   await shot('02-levels');
   await page.click('[data-level="1"]');
-  await page.evaluate(() => { __step(1); __fix(); __step(30); });
+  await page.evaluate(() => __step(31));
   check(`${name}: level 1 starts with its card`, (await state(page)) === 'playing' && (await page.evaluate(() => scene().intro > 0 && scene().n === 1)));
   await shot('03-level-card');
   await page.evaluate(() => __step(60 * 4));
@@ -138,7 +140,7 @@ async function run(browser, name, options, full) {
   if (!full) return finish();
 
   await page.click('#clear [data-action=next]');
-  await page.evaluate(() => { __step(1); __fix(); });
+  await page.evaluate(() => __step(1));
   check(`${name}: Next starts level 2`, await page.evaluate(() => app.state === 'playing' && scene().n === 2));
   check(`${name}: the bot clears level 2`, await page.evaluate(() => __bot(`app.state === 'clear'`, 300)));
 
@@ -154,26 +156,34 @@ async function run(browser, name, options, full) {
 
   // ---------- Breaches ----------
   await start('levels', 5);
-  // (at test speed one frame moves the chain past the jar's spacing: the gaps close into chain reactions, so keep
-  // the power-up pick out of the way)
+  // (at test speed one frame moves the chain past the jar's spacing: the gaps close into chain reactions, and their
+  // random power-ups, Taffy Pull say, would get in the way)
   await page.evaluate(() => { __step(60 * 3); Object.assign(scene().board, { speed: 3000, meterNeed: Infinity }); });
-  await page.evaluate(() => { for (let i = 0; i < 600 && scene().board.stars === 3; i++) __step(1); });
+  await page.evaluate(() => __while('scene().board.stars === 3', 600));
   const breach = await page.evaluate(() => { const ch = scene().board.chains[0]; return { stars: scene().board.stars, retreat: ch.retreat > 0, head: ch.orbs.at(-1).s }; });
   await page.evaluate(() => { scene().board.speed = 0; __step(60); });
   const pushed = await page.evaluate(() => scene().board.chains[0].orbs.at(-1).s);
   check(`${name}: a candy reaching a monster costs a star and pushes the chain back`, breach.stars === 2 && breach.retreat && pushed < breach.head - 200, `${Math.round(breach.head)} -> ${Math.round(pushed)}`);
-  await page.evaluate(() => { scene().board.speed = 3000; for (let i = 0; i < 1500 && app.state === 'playing'; i++) __step(1); });
+  await page.evaluate(() => { scene().board.speed = 3000; __while(`app.state === 'playing'`, 1500); });
   check(`${name}: losing all 3 stars fails the level`, await visible(page, 'failed'));
   await shot('08-failed');
 
   // ---------- Power-ups ----------
   await start('levels', 30);
-  await page.evaluate(() => { __step(60 * 5); scene().board.meter = scene().board.meterNeed; __step(1); });
-  const pick = await page.evaluate(() => [...document.querySelectorAll('#pickCards button')].map(b => b.dataset.power));
-  check(`${name}: a full combo meter offers 3 different power-ups`, (await state(page)) === 'pick' && new Set(pick).size === 3, pick.join(','));
-  await shot('09-pick');
-  await page.click('#pickCards button');
-  check(`${name}: picking one resumes play`, (await state(page)) === 'playing' && (await page.evaluate(() => scene().board.meter < scene().board.meterNeed)));
+  // a real combo: x x [gap] y y x  - shoot a y into the gap's back side, the y's pop, the x's close up and pop too
+  const combo = await page.evaluate(() => {
+    __step(60 * 5);
+    const s = scene(), b = s.board, ch = b.chains[0], o = ch.orbs, k = o.findIndex(q => q.s > ch.track.len * 0.25);
+    const x = 0, y = 1, at = o[k].s;
+    o.splice(k, 5, ...[x, x, y, y, x].map((c, i) => ({ id: 90000 + i, c, s: at + i * D })));
+    b.speed = 0; b.held = [y, y]; b.meter = 0; s.cool = 0;
+    const need = b.meterNeed, p = pointAt(ch.track, o[k + 2].s);
+    b.laser = 1; s.fireAt(p.x, p.y); b.laser = 0;
+    __step(90);
+    return { need, events: b.meter, banner: !document.getElementById('banner').hidden ? document.getElementById('bannerTitle').textContent : '', power: b.lastPower, expect: POWER[b.lastPower] && `${POWER[b.lastPower].name.toUpperCase()}!`, state: app.state };
+  });
+  check(`${name}: a combo gives a random power-up at once, no picking (and says which)`, combo.state === 'playing' && !!combo.power && combo.banner === combo.expect, JSON.stringify(combo));
+  await shot('09-power');
   const power = await page.evaluate(() => {
     const s = scene(), b = s.board, res = {};
     b.slow = b.laser = 0; b.next = null;
@@ -182,26 +192,26 @@ async function run(browser, name, options, full) {
     const fire = t => { s.cool = 0; b.laser = 1; s.fireAt(t.p.x, t.p.y); __step(30); b.laser = 0; };
     let t = pickOrb();
     const near = b.chains.flatMap(ch => ch.orbs.filter(o => o.s >= 0 && Math.hypot(pointAt(ch.track, o.s).x - t.p.x, pointAt(ch.track, o.s).y - t.p.y) < D * 0.9));
-    s.powerPicked('bomb');
+    b.apply('bomb');
     res.bombLoaded = b.next === 'bomb';
     fire(t);
     res.bomb = near.every(o => !b.chains.some(ch => ch.orbs.includes(o))) && b.next === null;
     t = pickOrb();
     const sameColor = b.chains.flatMap(ch => ch.orbs.filter(o => o.c === t.o.c)); // (new ones may roll out of the jar after)
-    s.powerPicked('zap');
+    b.apply('zap');
     fire(t);
     res.zap = sameColor.length > 1 && sameColor.every(o => !b.chains.some(ch => ch.orbs.includes(o)));
     const ch0 = b.chains[0], head0 = ch0.orbs.at(-1)?.s ?? 0;
-    s.powerPicked('rewind');
+    b.apply('rewind');
     __step(70);
     res.rewind = (ch0.orbs.at(-1)?.s ?? 0) < head0 - 100;
-    s.powerPicked('slow');
+    b.apply('slow');
     __step(1);
-    res.slow = b.slow > 9 && s.statusText.text.includes('Syrup');
-    s.powerPicked('wild');
+    res.slow = b.slow > 9 && document.getElementById('meterText').textContent.includes('Syrup');
+    b.apply('wild');
     __step(1);
     res.wild = b.held[b.sel] === WILD && document.getElementById('dot0').classList.contains('wild');
-    s.powerPicked('laser');
+    b.apply('laser');
     s.cool = 0;
     t = pickOrb();
     s.fireAt(t.p.x, t.p.y);
@@ -218,14 +228,14 @@ async function run(browser, name, options, full) {
   await page.click('#main [data-action=gauntlet]');
   check(`${name}: Gauntlet explains itself first`, await visible(page, 'gauntletInfo'));
   await page.click('#gauntletInfo [data-action=startGauntlet]');
-  await page.evaluate(() => { __step(1); __fix(); });
+  await page.evaluate(() => __step(1));
   check(`${name}: the Gauntlet starts at level 1 with 3 stars`, await page.evaluate(() => scene().mode === 'gauntlet' && scene().n === 1 && scene().board.stars === 3));
   await page.evaluate(() => { __step(200); scene().board.chains[0].orbs.at(-1).s = scene().board.chains[0].track.len; __step(1); }); // lose a star on purpose
-  await page.evaluate(() => { __bot('scene().n === 2', 300); __step(1); __fix(); });
+  await page.evaluate(() => { __bot('scene().n === 2', 300); __step(1); });
   const g2 = await page.evaluate(() => ({ n: scene().n, stars: scene().board.stars, score: scene().board.score, mode: scene().mode }));
   check(`${name}: clearing a Gauntlet level goes straight on, carrying stars and score`, g2.n === 2 && g2.mode === 'gauntlet' && g2.stars === 2 && g2.score > 500, JSON.stringify(g2));
-  // (racing chains close gaps into chain reactions; keep the power-up pick out of the way)
-  await page.evaluate(() => { __step(90); Object.assign(scene().board, { speed: 3000, meterNeed: Infinity }); for (let i = 0; i < 2000 && app.state === 'playing'; i++) __step(1); });
+  // (racing chains close gaps into chain reactions; keep their random power-ups out of the way)
+  await page.evaluate(() => { __step(90); Object.assign(scene().board, { speed: 3000, meterNeed: Infinity }); __while(`app.state === 'playing'`, 2000); });
   const over = await page.evaluate(() => ({ best: store.get('conga-gauntlet-best', {}), text: document.getElementById('overText').textContent }));
   check(`${name}: running out of stars ends the Gauntlet and saves the best`, (await visible(page, 'over')) && over.best.level === 2 && over.best.score > 0, JSON.stringify(over));
   await shot('11-gauntlet-over');
@@ -234,7 +244,7 @@ async function run(browser, name, options, full) {
   const errs0 = errors.length;
   const sizes = await page.evaluate(() => {
     const roads = [0, 0, 0, 0];
-    for (let n = 1; n <= 100; n++) { startLevel('levels', n); __step(2); roads[scene().level.tracks.length]++; }
+    for (let n = 1; n <= 100; n++) { startLevel('levels', n); game.update(1 / 60); game.update(1 / 60); roads[scene().level.tracks.length]++; } // (built and run, not drawn)
     return roads;
   });
   check(`${name}: levels 1-100 all build in the game`, errors.length === errs0, `roads: ${sizes.slice(1).join('/')}`);
@@ -256,7 +266,8 @@ async function run(browser, name, options, full) {
 (async () => {
   const server = await serve(path.resolve(__dirname, '..'));
   url = `${server.url}/index.html`;
-  const browser = await chromium.launch();
+  // headless Chromium has no GPU: WebGL needs SwiftShader
+  const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   try {
     await run(browser, 'phone', { viewport: { width: 375, height: 812 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, true);
     await run(browser, 'desktop', { viewport: { width: 1280, height: 800 } }, false);

@@ -48,10 +48,9 @@ const jingle = (notes, gap = 90) => notes.forEach((f, i) => setTimeout(() => bee
 // ---------- Menus ----------
 const $ = id => document.getElementById(id);
 // The whole game is in one of these states; only 'playing' accepts game input.
-// 'menu' | 'levels' | 'playing' | 'paused' | 'pick' | 'clear' | 'failed' | 'over'
+// 'menu' | 'levels' | 'playing' | 'paused' | 'clear' | 'failed' | 'over'
 const app = { state: 'menu', settingsFrom: 'main', mode: 'levels', level: 1 };
-let game;
-const scene = () => game?.scene.getScene('play');
+const scene = () => window.game; // the 3D board (js/game.js, a module that loads after this script)
 const levelsShown = () => Math.max(100, progress.unlocked); // the generator never runs out; the list grows past 100
 const nextLevel = () => Math.min(progress.unlocked, levelsShown());
 const totalStars = () => Object.values(progress.stars).reduce((a, b) => a + b, 0);
@@ -80,12 +79,8 @@ function updateSwap(held, sel) {
   }
 }
 
-// Restarting the scene wipes every candy, shot and tween in one go. sys.resume first: a paused scene must be
-// running again before it restarts.
-function restartScene(data) {
-  scene().sys.resume();
-  scene().scene.restart(data);
-}
+// Loading a level wipes every candy, shot and effect of the last one.
+const restartScene = data => scene().load(data);
 function startLevel(mode, level, carry = {}) {
   app.state = 'playing';
   app.mode = mode;
@@ -120,17 +115,15 @@ function openGauntlet() {
   $('gauntletBest').textContent = gauntletBest.score ? `Your best: ${gauntletBest.score.toLocaleString()}, reaching level ${gauntletBest.level}.` : '';
   showScreen('gauntletInfo');
 }
-// sys.pause/resume act immediately; scene.pause/resume wait a frame, which races with menu clicks.
+// Pausing just stops the game's update (the last frame stays on screen).
 function pauseGame() {
   if (app.state !== 'playing') return;
   app.state = 'paused';
   const s = scene();
-  s.sys.pause();
   $('pauseInfo').textContent = `${s.label()} · Score ${s.board.score.toLocaleString()}`;
   showScreen('pause');
 }
 function resumeGame() {
-  scene().sys.resume();
   app.state = 'playing';
   showScreen(null);
   document.activeElement?.blur();
@@ -138,29 +131,6 @@ function resumeGame() {
 function openSettings() {
   app.settingsFrom = app.state === 'paused' ? 'pause' : 'main';
   showScreen('settings');
-}
-
-// ---------- Power-up pick: the combo meter filled up ----------
-function openPick(offers) {
-  app.state = 'pick';
-  scene().sys.pause();
-  $('pickCards').replaceChildren(...offers.map(id => {
-    const b = document.createElement('button');
-    b.className = 'card';
-    b.dataset.power = id;
-    b.innerHTML = `<b>${POWER[id].name}</b><small>${POWER[id].desc}</small>`; // game data only, never player input
-    return b;
-  }));
-  showScreen('pick');
-  jingle([659, 784, 988]);
-}
-function choosePower(id) {
-  const s = scene();
-  s.sys.resume();
-  app.state = 'playing';
-  showScreen(null);
-  document.activeElement?.blur();
-  s.powerPicked(id);
 }
 
 // ---------- End of a level ----------
@@ -198,7 +168,6 @@ $('ui').addEventListener('click', e => {
   const btn = e.target.closest('button');
   if (!btn || !scene()) return;
   if (btn.dataset.level) return startLevel('levels', Number(btn.dataset.level));
-  if (btn.dataset.power) return choosePower(btn.dataset.power);
   const action = btn.dataset.action;
   if (action === 'play') startLevel('levels', nextLevel());
   else if (action === 'levels') openLevels();

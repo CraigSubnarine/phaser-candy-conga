@@ -81,10 +81,11 @@ const run = (b, secs) => { for (let i = 0; i < secs * 60; i++) b.step(1 / 60); }
   run(b, 2);
   check('the magnet pulls matching colors together: a chain reaction', colorsOf(ch) === '3,3' && b.chainN >= 1, `${colorsOf(ch)} chain ${b.chainN}`);
   check('chain reactions score more', b.score === 30 + 60, `${b.score}`);
-  check('a chain reaction is a combo: one notch on the meter', b.meter === 1, `meter ${b.meter}`);
-  b.meter = b.meterNeed;
-  b.usePick('slow');
-  check('each power-up picked needs one more combo for the next', b.meter === 0 && b.meterNeed === RULES.meterFirst + RULES.meterStep, `${b.meter}/${b.meterNeed}`);
+  const power = b.events.find(e => e.type === 'power');
+  check('a chain reaction is a combo; a full meter gives a random power-up right away', RULES.meterFirst === 1 && !!power && b.meter === 0, `meter ${b.meter}, power ${power?.id}`);
+  check('...and the next power-up needs one more combo', b.meterNeed === RULES.meterFirst + RULES.meterStep, `${b.meter}/${b.meterNeed}`);
+  const given = Array.from({ length: 40 }, () => b.award());
+  check('every power-up comes up, never the same one twice running', new Set(given).size === 6 && given.every((id, i) => i === 0 || id !== given[i - 1]), given.slice(0, 8).join(','));
 }
 {
   const { b, ch } = boardWith([4, 2, 1, 1]);
@@ -142,8 +143,6 @@ const run = (b, secs) => { for (let i = 0; i < secs * 60; i++) b.step(1 / 60); }
   check('Syrup slows the chains for a while', b.slow === 10);
   b.apply('bomb');
   check('Cherry Bomb loads the next shot without using up your candy', b.take().kind === 'bomb' && b.next === null);
-  const offers = b.offers();
-  check('power-up offers are 3 different ones', new Set(offers).size === 3, offers.join(','));
 }
 {
   const { b } = boardWith([0, 0, 1]);
@@ -158,6 +157,20 @@ const run = (b, secs) => { for (let i = 0; i < secs * 60; i++) b.step(1 / 60); }
   const ch = b.chains[0];
   check('a level opens with the chain rolling in', ch.orbs.length > 5 && !ch.rollIn, `${ch.orbs.length} candies`);
   check('candies never overlap', ch.orbs.every((o, i) => i === 0 || o.s - ch.orbs[i - 1].s >= D - 0.01));
+}
+{
+  // a tester cleared the road and waited ~15 s for candies: the jar's next candies must rush out again
+  const L = makeLevel(5), b = new Board(L), ch = b.chains[0];
+  while (ch.rollIn) b.step(1 / 60);
+  run(b, 2);
+  b.removeAll(ch, ch.orbs.filter(o => o.s > 0)); // pop every candy on the road
+  let t = 0;
+  while (t < 30 && !(ch.orbs.length && ch.orbs.at(-1).s > 0.2 * ch.track.len)) { b.step(1 / 60); t += 1 / 60; }
+  check('a cleared road fills again quickly while the jar has candies', t < 3, `${t.toFixed(1)} s`);
+  ch.orbs = [];
+  b.apply('rewind');
+  run(b, 3);
+  check('Taffy Pull on an empty road does not stop candies coming', ch.orbs.length > 3, `${ch.orbs.length} candies`);
 }
 
 // ---------- Contact sheet: every level on one page, to look over by eye ----------

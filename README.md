@@ -1,14 +1,14 @@
 # phaser-candy-conga
 
-**Candy Conga**: a candy chain shooter in Phaser 3. Chains of candies dance down candy-cane roads towards hungry monsters. Your gumball machine fires candies into the chain: line up 3 or more of a color and they pop. Clear every candy before the monsters eat them.
+**Candy Conga**: a candy chain shooter in 3D with three.js (it began in Phaser 3, hence the folder and repo name; renaming would break the live link). Chains of candies dance down candy-cane roads towards hungry monsters. Your gumball machine fires candies into the chain: line up 3 or more of a color and they pop. Clear every candy before the monsters eat them.
 
-No build step and no asset files: the art is drawn in code, the sounds are synthesized, and every level is generated.
+No build step and no asset files: the 3D models are built from shapes in code, the candy markings are painted on canvas textures, the sounds are synthesized, and every level is generated.
 
 - **Play:** https://craigsubnarine.github.io/phaser-candy-conga/
 - **Repo:** https://github.com/CraigSubnarine/phaser-candy-conga
 - **Run locally:** the `gamedev` preview server at http://localhost:8765/phaser-candy-conga/ (or `node tools/server.js` from a script)
 - **Controls:** phone: touch anywhere and drag to aim, let go to shoot. Tap the gumball machine, or the button at the bottom, to swap your two candies. Computer: aim with the mouse, click to shoot, right-click or Space to swap. Pause with the top-right button or Esc / P.
-- **Status:** v1, live. Levels mode, Gauntlet and power-ups all work; the leaderboard (shared Supabase backend) is next.
+- **Status:** v2, live: moved from Phaser to three.js (glossy rolling candies, candy-cane curbs, 3D monsters and gumball machine, a tilted camera). Levels mode, Gauntlet and power-ups all work; the leaderboard (shared Supabase backend) is next.
 
 ## How it plays
 
@@ -16,7 +16,7 @@ No build step and no asset files: the art is drawn in code, the sounds are synth
 - **Your candies:** you hold two, in random colors (only colors still on the board), and swap between them. Now and then you get a rainbow candy that matches anything.
 - **Stars:** you start with 3. A candy reaching a monster costs a star, and the chain is pushed back. With no stars left, it's over.
 - **Jawbreakers** (from level 25): grey candies that never match. They crack when a match pops right next to them.
-- **Power-ups:** combos fill the combo meter; plain matches don't. Each chain reaction is one notch: 1 for the first power-up of a level, then 2, then 3... When it's full, pick 1 of 3; it lasts until the end of the level:
+- **Power-ups:** combos fill the combo meter; plain matches don't. Each chain reaction is one notch: 1 for the first power-up of a level, then 2, then 3... When it's full you get a random power-up straight away (never the same one twice running), and its name flashes up. It lasts until the end of the level:
   - **Cherry Bomb:** your next shot explodes.
   - **Pop Rocks:** your next shot zaps every candy of the color it hits.
   - **Taffy Pull:** pulls every chain back.
@@ -48,13 +48,13 @@ No build step and no asset files: the art is drawn in code, the sounds are synth
 
 ## Code layout
 
-- `index.html`: the page, menus (HTML/CSS) and script tags.
+- `index.html`: the page, menus and HUD (HTML/CSS), the import map for three.js and the script tags.
 - `js/data.js`: constants, candies, power-ups, rules and the difficulty curve.
 - `js/levels.js`: the level generator and the rules every level must pass.
-- `js/chain.js`: the chain model (Board): rolling, inserting, matching, chain reactions, monsters, power-ups, the candies you hold. No Phaser, so it's tested in Node.
-- `js/art.js`: all the pictures, drawn in code and saved under texture names.
+- `js/chain.js`: the chain model (Board): rolling, inserting, matching, chain reactions, monsters, power-ups, the candies you hold. No three.js, so it's tested in Node.
+- `js/art.js` (module): the 3D models and textures: candies, gumball machine, monsters, jars, curbs, the painted board.
 - `js/ui.js`: saves, sound, menus and input.
-- `js/game.js`: the Phaser scene: draws the board, flies the shots, aiming, effects, HUD.
+- `js/game.js` (module): the three.js scene: camera fit, drawing the board, shots, aiming (a ray onto the board), effects, HUD.
 
 ## Testing
 
@@ -63,11 +63,11 @@ No build step and no asset files: the art is drawn in code, the sounds are synth
   - menus, the levels grid, real taps, swapping, pause and auto-pause
   - a bot that clears levels 1, 2 and a 2-road and a 3-road level
   - breaches and failing a level
-  - every power-up
+  - a real combo giving a random power-up, and every power-up's effect
   - the Gauntlet carrying stars and score
   - every level 1-100 building in the game
 
-  It saves screenshots to `playtest-output/` (git-ignored) and needs `playwright-core`; see `GameDev/CLAUDE.md` for the `NODE_PATH` on this PC.
+  It runs WebGL on SwiftShader (headless Chromium has no GPU), saves screenshots to `playtest-output/` (git-ignored) and needs `playwright-core`; see `GameDev/CLAUDE.md` for the `NODE_PATH` on this PC.
 
 ## What I learned
 

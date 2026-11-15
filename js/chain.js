@@ -40,6 +40,7 @@ class Board {
     this.chainN = 0;       // chain reactions set off by the last shot (1+ makes it a combo)
     this.meter = 0;        // chain reactions towards the next power-up (plain matches don't count)
     this.meterNeed = RULES.meterFirst;
+    this.lastPower = null; // the power-up given last, so the next one is a different one
     this.slow = 0;         // seconds of Syrup left
     this.laser = 0;        // seconds of Licorice Laser left
     this.next = null;      // 'bomb' | 'zap': what the next shot is
@@ -62,6 +63,7 @@ class Board {
 
   stepChain(ch, dt) {
     const o = ch.orbs, len = ch.track.len;
+    if (!o.length) ch.retreat = 0; // an empty road has nothing to push back (Taffy Pull would hold up the jar for good)
     // new candies come out of the jar at the start of the road (not while the chain is being pushed back)
     while (ch.retreat <= 0 && ch.queue.length && (!o.length || o[0].s > 0)) o.unshift({ id: candyId++, c: ch.queue.shift(), s: o.length ? Math.min(o[0].s - D, 0) : 0 });
     if (!o.length) return;
@@ -118,11 +120,18 @@ class Board {
     if (a > 0 && o[a - 1].c === JAW && o[a].s - o[a - 1].s <= TOUCH) a--;
     if (b < o.length - 1 && o[b + 1].c === JAW && o[b + 1].s - o[b].s <= TOUCH) b++;
     const popped = o.splice(a, b - a + 1);
+    this.emptied(ch);
     if (reaction) { this.chainN++; this.meter++; } // a combo: one shot, more than one pop
     const points = popped.length * 10 * (1 + this.chainN);
     this.score += points;
     this.events.push({ type: 'pop', ch, orbs: popped, color: c, points, chain: this.chainN });
+    if (this.meter >= this.meterNeed) this.award();
     return popped.length;
+  }
+
+  // You popped every candy on the road but the jar has more: they rush out like at the start (no waiting for a crawl).
+  emptied(ch) {
+    if (ch.queue.length && !ch.orbs.some(b => b.s > 0)) ch.rollIn = true;
   }
 
   // A shot (color c) reached candy i of chain ch at (x, y). kind: null, 'bomb' or 'zap'. Returns the new candy, if any.
@@ -164,6 +173,7 @@ class Board {
     if (!popped.length) return;
     const gone = new Set(popped);
     ch.orbs = ch.orbs.filter(b => !gone.has(b));
+    this.emptied(ch);
     const points = popped.length * 10;
     this.score += points;
     this.events.push({ type: 'pop', ch, orbs: popped, color: popped[0].c, points, chain: 0, power: true });
@@ -208,16 +218,15 @@ class Board {
   }
 
   // ---------- Power-ups ----------
-  offers() {
-    const pool = POWERUPS.map(p => p.id), out = [];
-    while (out.length < 3) out.push(pool.splice(this.rng.int(0, pool.length - 1), 1)[0]);
-    return out;
-  }
-  // Called when the meter is full and a power-up has been picked.
-  usePick(id) {
-    this.meter = Math.max(0, this.meter - this.meterNeed);
+  // The meter is full: a random power-up (never the same one twice running) takes effect right away.
+  award() {
+    this.meter = 0;
     this.meterNeed += RULES.meterStep;
+    const id = this.rng.pick(POWERUPS.map(p => p.id).filter(id => id !== this.lastPower));
+    this.lastPower = id;
     this.apply(id);
+    this.events.push({ type: 'power', id });
+    return id;
   }
   apply(id) {
     if (id === 'bomb' || id === 'zap') this.next = id;

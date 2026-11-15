@@ -1,151 +1,289 @@
-// Candy Conga: the game scene. Loaded last (after data, levels, chain, art and ui). The rules live in chain.js
-// (Board); this file draws the board, flies the shots, handles aiming and plays the effects.
+// Candy Conga: the 3D board (three.js). Loaded last, as a module; the plain scripts before it (data, levels, chain,
+// ui) share globals with it. The rules live in chain.js (Board); this file draws the board, flies the shots,
+// handles aiming and plays the effects. ui.js (menus, saves, sound, input) calls into window.game.
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { makeCandy, setCandy, candyKey, makeMachine, makeMonster, MONSTER_COLORS, makeJar, makeCurb, boardTexture, BOARD, sparkTexture } from './art.js';
 
-const FONT = 'Fredoka';
-const ROADS = [ // candy-cane edges and the road's fill, one style per road
-  { edge: 0xff5d8f, edge2: 0xffffff, fill: 0xffd6e5 },
-  { edge: 0x2ec98a, edge2: 0xffffff, fill: 0xd2f7e8 },
-  { edge: 0xc98a4b, edge2: 0xffe6c4, fill: 0xf3d2a8 },
+const DEG = Math.PI / 180, FOV = 34;
+const TILT = 30 * DEG;  // the camera looks down at the board, leaning back this far from straight down
+const SWAP_PX = 86;     // screen kept clear at the bottom for the swap button
+// What the camera must always show (model coordinates): the play area plus room for the monsters and curbs.
+const FRAME = { x0: 0, x1: W, y0: PLAY.y0 - 80, y1: PLAY.y1 + 50 };
+const ROADS = [ // candy-cane curbs and the road's fill, one style per road
+  { cane: [0xff5d8f, 0xffffff], fill: '#ffd6e5' },
+  { cane: [0x2ec98a, 0xffffff], fill: '#d2f7e8' },
+  { cane: [0xc98a4b, 0xffe6c4], fill: '#f3d2a8' },
 ];
-const label = (scene, x, y, str, size, color = '#4a2040') =>
-  scene.add.text(x, y, str, { fontFamily: FONT, fontSize: `${size}px`, fontStyle: 'bold', color, stroke: '#ffffff', strokeThickness: Math.round(size / 5), align: 'center' });
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const wx = x => x - W / 2, wz = y => y - H / 2; // model x/y -> world x/z
 
-class Play extends Phaser.Scene {
-  constructor() { super('play'); }
+// ---------- Renderer, scene, camera, lights ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.domElement.id = 'view';
+document.body.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture; // glossy candy
+scene.environmentIntensity = 0.7;
+const camera = new THREE.PerspectiveCamera(FOV, 1, 50, 9000);
+const sun = new THREE.DirectionalLight(0xffffff, 1.9);
+sun.position.set(-380, 1100, 420);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -820, right: 820, top: 900, bottom: -900, near: 300, far: 2600 });
+sun.shadow.bias = -0.0006;
+scene.add(new THREE.HemisphereLight(0xffffff, 0xffc4dc, 1.3), sun, sun.target);
 
-  create(data) {
-    makeArt(this);
+// The ground: unlit, so the pastel colors come out exactly as painted, with a shadow catcher on top for soft shadows.
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(20000, 20000), new THREE.MeshBasicMaterial());
+ground.rotation.x = -Math.PI / 2;
+const boardMat = new THREE.MeshBasicMaterial();
+const board = new THREE.Mesh(new THREE.PlaneGeometry(BOARD.x1 - BOARD.x0, BOARD.y1 - BOARD.y0), boardMat);
+board.rotation.x = -Math.PI / 2;
+board.position.set(wx((BOARD.x0 + BOARD.x1) / 2), 0.2, wz((BOARD.y0 + BOARD.y1) / 2));
+const shadows = new THREE.Mesh(new THREE.PlaneGeometry(2400, 2800), new THREE.ShadowMaterial({ opacity: 0.2 }));
+shadows.rotation.x = -Math.PI / 2;
+shadows.position.y = 0.4;
+shadows.receiveShadow = true;
+scene.add(ground, board, shadows);
+
+// ---------- Camera: fit the board between the HUD and the swap button, on any screen ----------
+const cam = { dist: 2500, tz: 0, shake: 0, amp: 0 };
+const v3 = new THREE.Vector3();
+function placeCamera(dist, tz) {
+  camera.position.set(0, Math.cos(TILT) * dist, tz + Math.sin(TILT) * dist);
+  camera.lookAt(0, 0, tz);
+  camera.updateMatrixWorld();
+}
+function frameBox() { // where FRAME's corners land on screen (-1..1), at the ground and a monster's height
+  const b = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
+  for (const x of [FRAME.x0, FRAME.x1]) for (const y of [FRAME.y0, FRAME.y1]) for (const h of [0, 70]) {
+    v3.set(wx(x), h, wz(y)).project(camera);
+    b.x0 = Math.min(b.x0, v3.x); b.x1 = Math.max(b.x1, v3.x); b.y0 = Math.min(b.y0, v3.y); b.y1 = Math.max(b.y1, v3.y);
+  }
+  return b;
+}
+function fitCamera() {
+  const hud = $('hud').getBoundingClientRect().bottom + 4;
+  const top = 1 - 2 * hud / innerHeight, bottom = -1 + 2 * SWAP_PX / innerHeight;
+  let dist = 2500, tz = 0;
+  for (let it = 0; it < 5; it++) {
+    let lo = 300, hi = 40000;
+    for (let k = 0; k < 30; k++) { // the nearest distance at which the frame fits
+      dist = (lo + hi) / 2;
+      placeCamera(dist, tz);
+      const b = frameBox();
+      if (b.x1 - b.x0 <= 1.96 && b.y1 - b.y0 <= top - bottom) hi = dist; else lo = dist;
+    }
+    placeCamera(dist = hi, tz);
+    const b = frameBox(), err = (b.y1 + b.y0) / 2 - (top + bottom) / 2;
+    tz -= err * dist * Math.tan(FOV / 2 * DEG); // sitting too high on screen: aim further up the board
+  }
+  Object.assign(cam, { dist, tz });
+  placeCamera(dist, tz);
+}
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  fitCamera();
+}
+
+// Model point -> page pixels, and page pixels -> model point (on the plane through the candies' middles).
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -D / 2);
+function toScreen(x, y, h = D / 2) {
+  v3.set(wx(x), h, wz(y)).project(camera);
+  return { x: (v3.x + 1) / 2 * innerWidth, y: (1 - v3.y) / 2 * innerHeight };
+}
+function toGame(px, py) {
+  ndc.set(px / innerWidth * 2 - 1, 1 - py / innerHeight * 2);
+  ray.setFromCamera(ndc, camera);
+  return ray.ray.intersectPlane(aimPlane, v3) ? { x: v3.x + W / 2, y: v3.z + H / 2 } : { x: W / 2, y: 0 };
+}
+
+// ---------- Effects: sparkle bursts ----------
+const FX = 500, fxPos = new Float32Array(FX * 3).fill(1e6), fxCol = new Float32Array(FX * 3), fxVel = new Float32Array(FX * 3), fxLife = new Float32Array(FX);
+const fxGeo = new THREE.BufferGeometry();
+fxGeo.setAttribute('position', new THREE.BufferAttribute(fxPos, 3));
+fxGeo.setAttribute('color', new THREE.BufferAttribute(fxCol, 3));
+scene.add(new THREE.Points(fxGeo, new THREE.PointsMaterial({ size: 34, map: sparkTexture(), vertexColors: true, transparent: true, depthWrite: false })));
+let fxNext = 0;
+const tmpColor = new THREE.Color();
+function burst(x, y, n, color, speed = 260) {
+  tmpColor.set(color);
+  for (let k = 0; k < n; k++) {
+    const i = fxNext++ % FX, a = Math.random() * TAU, s = speed * (0.35 + Math.random());
+    fxPos.set([wx(x), D / 2, wz(y)], i * 3);
+    fxVel.set([Math.cos(a) * s, 120 + Math.random() * 220, Math.sin(a) * s], i * 3);
+    fxCol.set([tmpColor.r, tmpColor.g, tmpColor.b], i * 3);
+    fxLife[i] = 0.3 + Math.random() * 0.35;
+  }
+}
+function updateFx(dt) {
+  for (let i = 0; i < FX; i++) {
+    if (fxLife[i] <= 0) continue;
+    if ((fxLife[i] -= dt) <= 0) { fxPos[i * 3 + 1] = 1e6; continue; }
+    fxVel[i * 3 + 1] -= 900 * dt;
+    for (let k = 0; k < 3; k++) fxPos[i * 3 + k] += fxVel[i * 3 + k] * dt;
+  }
+  fxGeo.attributes.position.needsUpdate = fxGeo.attributes.color.needsUpdate = true;
+}
+
+// Text that floats up from a spot on the board, and a big message across the middle (both HTML, over the canvas).
+function floatText(x, y, str, color = '#ff4d8d', size = 30) {
+  const p = toScreen(x, y), el = document.createElement('div');
+  el.className = 'float';
+  el.textContent = str;
+  Object.assign(el.style, { left: `${p.x}px`, top: `${p.y}px`, color, fontSize: `${size * Math.min(1, innerWidth / 720) * 1.25}px` });
+  el.addEventListener('animationend', () => el.remove());
+  $('floats').append(el);
+}
+function flash() {
+  const el = $('flash');
+  el.classList.remove('on');
+  void el.offsetWidth; // restart the animation
+  el.classList.add('on');
+}
+
+// Aim guide: small balls along the line; with Licorice Laser, a dark line to a ring round the candy you'll hit.
+const AIM_DOTS = 80;
+const aimDots = new THREE.InstancedMesh(new THREE.SphereGeometry(4.5, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }), AIM_DOTS);
+aimDots.count = 0;
+aimDots.frustumCulled = false;
+const ring = new THREE.Mesh(new THREE.TorusGeometry(29, 3, 8, 40), new THREE.MeshBasicMaterial({ color: 0x3a0d2e }));
+ring.rotation.x = Math.PI / 2;
+ring.visible = false;
+const machine = makeMachine();
+machine.group.scale.setScalar(1.25);
+scene.add(aimDots, ring, machine.group);
+const dummy = new THREE.Object3D();
+
+// ---------- The game ----------
+class Play {
+  constructor() {
+    this.world = new THREE.Group(); // everything that belongs to one level
+    scene.add(this.world);
+    this.trash = [];                // that level's geometries and textures, freed when the next one loads
+  }
+
+  // A new level (or the menu's backdrop). data: { play, mode, level, stars, score }.
+  load(data) {
+    for (const o of this.trash) o.dispose();
+    this.trash = [];
+    this.world.clear();
     this.playing = !!data?.play;
     this.mode = data?.mode || 'levels';
     this.n = data?.level || nextLevel();
     this.level = makeLevel(this.n);
     this.board = new Board(this.level, { stars: data?.stars, score: data?.score });
-    this.t = 0;                         // game time that stops while paused (update() isn't called then)
+    this.t = 0;                          // game time that stops while paused (update() isn't called then)
     this.intro = this.playing ? 1.3 : 0; // the level card shows before the chain starts
-    this.cool = 0;                      // seconds until the next shot
+    this.cool = 0;                       // seconds until the next shot
     this.shots = [];
-    this.sprites = new Map();           // candy id -> image
+    this.candies = new Map();            // candy id -> its 3D candy
+    this.popping = [];                   // candies swelling up and vanishing
     this.ended = false;
-    this.pending = null;                // { t, fn }: what happens after a level ends
-    this.down = null;                   // where the current touch/click started
-    this.aim = null;                    // the point being aimed at
+    this.pending = null;                 // { t, fn }: what happens after a level ends
+    this.down = null;                    // where the current touch/click started
+    this.aim = null;                     // the point being aimed at
     this.angle = -Math.PI / 2;
     this.nextWarn = 0;
+    this.kick = this.swapT = this.bannerT = 0;
+    this.hudKey = this.heldKey = '';
+    cam.shake = 0;
 
-    this.drawBoard();
-    const L = this.level;
-    for (const t of L.tracks) this.add.image(t.pts[0], t.pts[1], 'jar').setDepth(2);
-    this.monsters = L.holes.map((h, i) => {
-      const body = this.add.image(h.x, h.y - 22, `monster-${(this.n + i) % MONSTER_COLORS.length}`).setScale(0.85).setDepth(4);
-      const mouth = this.add.image(h.x, h.y + 4, 'mouth').setScale(0.85, 0.3).setDepth(4);
-      return { body, mouth, chains: this.board.chains.filter(ch => ch.track.hole === i) };
+    const L = this.level, bg = `hsl(${Math.round((this.n * 0.137) % 1 * 360)}, 75%, 93%)`; // (three.js reads only the comma form)
+    ground.material.color.set(bg);
+    boardMat.map = boardTexture(L, bg, ROADS.map(r => r.fill));
+    boardMat.needsUpdate = true;
+    this.trash.push(boardMat.map);
+    L.tracks.forEach((t, i) => {
+      for (const side of [-1, 1]) {
+        const curb = makeCurb(t.pts, side, ROADS[i % ROADS.length].cane);
+        this.world.add(curb);
+        this.trash.push(curb.geometry);
+      }
+      const jar = makeJar();
+      jar.position.set(wx(t.pts[0]), 0, wz(t.pts[1]));
+      this.world.add(jar);
     });
-    // The gumball machine: turns to aim; the candy you'll shoot sits in the chute, the other in the globe.
-    this.cur = this.add.image(60, 0, 'candy-0').setScale(0.82);
-    this.other = this.add.image(0, 0, 'candy-0').setScale(0.82);
-    this.machine = this.add.container(L.launcher.x, L.launcher.y, [this.add.image(0, 0, 'machine'), this.cur, this.other]).setDepth(5);
-    this.aimG = this.add.graphics().setDepth(6);
-    this.ring = this.add.image(0, 0, 'ring').setDepth(6).setVisible(false);
-    this.fx = this.add.particles(0, 0, 'spark', { speed: { min: 90, max: 280 }, lifespan: { min: 250, max: 600 }, scale: { start: 1.3, end: 0 }, emitting: false }).setDepth(7);
-    this.makeHud();
-    this.heldKey = '';
-    this.render();
+    this.monsters = L.holes.map((h, i) => {
+      const m = makeMonster(MONSTER_COLORS[(this.n + i) % MONSTER_COLORS.length], TILT);
+      m.root.position.x = wx(h.x);
+      m.root.position.z = wz(h.y);
+      this.world.add(m.root);
+      return { ...m, chomp: 0, chains: this.board.chains.filter(ch => ch.track.hole === i) };
+    });
+    machine.group.position.set(wx(L.launcher.x), 0, wz(L.launcher.y));
+    $('hud').style.visibility = this.playing ? 'visible' : 'hidden';
+    $('banner').hidden = true;
+    $('floats').replaceChildren();
+    this.updateHud();
+    if (!this.manual) this.render(); // (the playtest draws when it wants to)
     if (this.playing) {
       const roads = L.tracks.length === 1 ? '1 road' : `${L.tracks.length} roads`;
-      this.banner(`${this.mode === 'gauntlet' ? 'GAUNTLET · ' : ''}LEVEL ${this.n}`, 1300, 60, `${L.name} · ${roads}`);
+      this.banner(`${this.mode === 'gauntlet' ? 'GAUNTLET · ' : ''}LEVEL ${this.n}`, 1300, `${L.name} · ${roads}`);
       jingle([523, 659, 784], 110);
     }
   }
 
   label() { return `${this.mode === 'gauntlet' ? 'Gauntlet · ' : ''}Level ${this.n}`; }
 
-  // Background, sprinkles and the roads, drawn once into a single picture.
-  drawBoard() {
-    const L = this.level, R = makeRng(L.seed ^ 0xbeef), g = this.make.graphics({ add: false });
-    g.fillStyle(Phaser.Display.Color.HSLToColor((this.n * 0.137) % 1, 0.75, 0.93).color).fillRect(0, 0, W, H);
-    for (let i = 0; i < 170; i++) {
-      const x = R.range(0, W), y = R.range(0, H), a = R.range(0, TAU);
-      g.lineStyle(6, CANDIES[R.int(0, CANDIES.length - 1)].color, 0.3).lineBetween(x, y, x + Math.cos(a) * 14, y + Math.sin(a) * 14);
-    }
-    L.tracks.forEach((t, i) => {
-      const pal = ROADS[i % ROADS.length], p = t.pts, n = p.length / 2;
-      for (let j = 0; j < n; j += 3) g.fillStyle(Math.floor(j / 12) % 2 ? pal.edge2 : pal.edge).fillCircle(p[2 * j], p[2 * j + 1], D / 2 + 9);
-      g.fillStyle(pal.fill);
-      for (let j = 0; j < n; j += 3) g.fillCircle(p[2 * j], p[2 * j + 1], D / 2 + 3);
-      g.fillCircle(p[2 * n - 2], p[2 * n - 1], D / 2 + 3);
-    });
-    this.add.renderTexture(0, 0, W, H).setOrigin(0).setDepth(0).draw(g);
-    g.destroy();
-  }
-
-  makeHud() {
-    const panel = this.add.graphics().setDepth(10);
-    panel.fillStyle(0xffffff, 0.72).fillRoundedRect(10, 8, W - 20, 112, 22);
-    this.levelText = label(this, 28, 16, '', 30);
-    this.scoreText = label(this, 28, 56, '', 26, '#ff4d8d');
-    this.starImgs = [0, 1, 2].map(i => this.add.image(452 + i * 48, 48, 'star').setDepth(10));
-    this.meterG = this.add.graphics().setDepth(10);
-    this.statusText = label(this, 300, 104, '', 18, '#4a2040').setOrigin(0.5);
-    for (const o of [this.levelText, this.scoreText, this.statusText]) o.setDepth(11);
-    this.hud = [panel, this.levelText, this.scoreText, this.meterG, this.statusText, ...this.starImgs];
-    for (const o of this.hud) o.setVisible(this.playing);
-    this.updateHud();
-  }
-
   updateHud() {
     if (!this.playing) return;
-    const b = this.board;
-    this.levelText.setText(this.label());
-    this.scoreText.setText(`Score ${b.score.toLocaleString()}`);
-    this.starImgs.forEach((s, i) => s.setTint(i < b.stars ? 0xffb020 : 0xead0dc));
-    const full = Math.min(1, b.meter / b.meterNeed);
-    this.meterG.clear().fillStyle(0xf3d6e3).fillRoundedRect(24, 94, 552, 20, 10).fillStyle(0xff4d8d).fillRoundedRect(24, 94, Math.max(20, 552 * full), 20, 10);
-    const st = [];
+    const b = this.board, st = [];
     if (b.next) st.push(`Next shot: ${POWER[b.next].name}`);
     if (b.slow > 0) st.push(`Syrup ${Math.ceil(b.slow)}`);
     if (b.laser > 0) st.push(`Laser ${Math.ceil(b.laser)}`);
-    this.statusText.setText(st.length ? st.join(' · ') : `COMBO METER ${b.meter}/${b.meterNeed}`);
+    const text = st.length ? st.join(' · ') : `COMBO METER ${b.meter}/${b.meterNeed}`, key = `${this.n}|${b.score}|${b.stars}|${text}`;
+    if (key === this.hudKey) return;
+    this.hudKey = key;
+    $('hudLevel').textContent = this.label();
+    $('hudScore').textContent = `Score ${b.score.toLocaleString()}`;
+    $('hudStars').innerHTML = starsHtml(b.stars);
+    $('meterFill').style.width = `${Math.min(1, b.meter / b.meterNeed) * 100}%`;
+    $('meterText').textContent = text;
   }
 
   // A big message in the middle of the screen (and an optional smaller line under it).
-  banner(str, ms = 1100, size = 56, sub = '') {
-    const t = label(this, W / 2, H * 0.44, str, size).setOrigin(0.5).setDepth(12).setAlpha(0).setScale(0.6);
-    const parts = [t];
-    if (sub) parts.push(label(this, W / 2, H * 0.44 + size * 0.95, sub, Math.round(size * 0.5), '#ff4d8d').setOrigin(0.5).setDepth(12).setAlpha(0));
-    this.tweens.add({ targets: t, scale: 1, duration: 220, ease: 'Back.easeOut' });
-    this.tweens.add({ targets: parts, alpha: 1, duration: 200, yoyo: true, hold: ms - 400, onComplete: () => parts.forEach(p => p.destroy()) });
-  }
-  floatText(x, y, str, color = '#ff4d8d', size = 30) {
-    const t = label(this, x, y, str, size, color).setOrigin(0.5).setDepth(9);
-    this.tweens.add({ targets: t, y: y - 70, alpha: 0, duration: 800, ease: 'Quad.easeOut', onComplete: () => t.destroy() });
+  banner(title, ms = 1100, sub = '') {
+    $('bannerTitle').textContent = title;
+    $('bannerSub').textContent = sub;
+    const el = $('banner');
+    el.hidden = true;
+    void el.offsetWidth;
+    el.hidden = false;
+    this.bannerT = ms / 1000;
   }
 
-  update(time, delta) {
-    const dt = Math.min(delta, 50) / 1000;
+  update(dt) {
     this.t += dt;
+    updateFx(dt);
+    this.animate(dt);
+    if (this.bannerT > 0 && (this.bannerT -= dt) <= 0) $('banner').hidden = true;
     if (!this.playing) { // menu backdrop: the chain rolls in, then waits
       if (this.board.chains.some(ch => ch.rollIn)) this.board.step(dt);
-      this.render();
       return;
     }
     if (this.ended) {
       this.updateShots(dt);
       this.drainEvents();
-      this.render();
       if (this.pending && (this.pending.t -= dt) <= 0) { const fn = this.pending.fn; this.pending = null; fn(); }
       return;
     }
-    if (this.intro > 0) { this.intro -= dt; this.render(); return; }
+    if (this.intro > 0) { this.intro -= dt; return; }
     this.cool -= dt;
     this.board.step(dt);
     this.updateShots(dt);
     this.drainEvents();
-    this.render();
     this.updateHud();
     this.warn();
     if (this.board.dead) return this.finish(false);
     if (this.board.cleared && !this.shots.length) return this.finish(true);
-    if (this.board.meter >= this.board.meterNeed) openPick(this.board.offers());
   }
 
   finish(won) {
@@ -156,11 +294,11 @@ class Play extends Phaser.Scene {
       const bonus = b.stars * RULES.starBonus;
       b.score += bonus;
       this.updateHud();
-      this.banner(b.stars === 3 ? 'PERFECT!' : 'LEVEL CLEAR!', 1300, 64, `+${bonus} star bonus`);
+      this.banner(b.stars === 3 ? 'PERFECT!' : 'LEVEL CLEAR!', 1300, `+${bonus} star bonus`);
       jingle([523, 659, 784, 1046, 1318]);
       this.pending = { t: 1.5, fn: () => this.mode === 'gauntlet' ? startLevel('gauntlet', this.n + 1, { stars: b.stars, score: b.score }) : levelCleared(this) };
     } else {
-      this.banner('OUT OF STARS', 1200, 60);
+      this.banner('OUT OF STARS', 1200);
       boom(400, 0.1);
       this.pending = { t: 1.3, fn: () => this.mode === 'gauntlet' ? gauntletOver(this) : levelFailed(this) };
     }
@@ -176,7 +314,8 @@ class Play extends Phaser.Scene {
   }
 
   // ---------- Input (called from ui.js) ----------
-  toGame(e) { return { x: this.scale.transformX(e.pageX), y: this.scale.transformY(e.pageY) }; }
+  toGame(e) { return toGame(e.clientX, e.clientY); }
+  toScreen(x, y) { return toScreen(x, y); }
   nearMachine(p) { return Math.hypot(p.x - this.level.launcher.x, p.y - this.level.launcher.y) < 64; }
   pointerDown(e) {
     if (this.ended) return;
@@ -205,7 +344,7 @@ class Play extends Phaser.Scene {
     if (this.ended || !this.playing) return;
     this.board.swap();
     beep(784, 45, 0.035);
-    this.tweens.add({ targets: [this.cur, this.other], scale: { from: 0.5, to: 0.82 }, duration: 120 });
+    this.swapT = 0.12;
   }
 
   // ---------- Shots ----------
@@ -218,41 +357,44 @@ class Play extends Phaser.Scene {
     const { c, kind } = this.board.take();
     this.cool = RULES.cooldown;
     this.fired = (this.fired || 0) + 1;
-    const sx = m.x + Math.cos(a) * 60, sy = m.y + Math.sin(a) * 60;
-    const sp = this.add.image(sx, sy, kind ? `candy-${kind}` : candyKey(c)).setDepth(8);
+    const sx = m.x + Math.cos(a) * 68, sy = m.y + Math.sin(a) * 68;
+    const obj = makeCandy(kind || candyKey(c));
+    this.world.add(obj.root);
     if (target) {
-      this.shots.push({ sp, c, kind, lob: { from: { x: sx, y: sy }, to: { x: target.x, y: target.y }, ch: target.ch, orb: target.orb, tap: { x, y }, t: 0, dur: 0.3 } });
+      this.shots.push({ obj, c, kind, x: sx, y: sy, lob: { from: { x: sx, y: sy }, to: { x: target.x, y: target.y }, ch: target.ch, orb: target.orb, tap: { x, y }, t: 0, dur: 0.3 } });
       beep(988, 70, 0.04);
     } else {
-      this.shots.push({ sp, c, kind, x: sx, y: sy, vx: Math.cos(a) * RULES.shotSpeed, vy: Math.sin(a) * RULES.shotSpeed });
+      this.shots.push({ obj, c, kind, x: sx, y: sy, vx: Math.cos(a) * RULES.shotSpeed, vy: Math.sin(a) * RULES.shotSpeed });
       beep(660, 40, 0.035);
     }
-    this.machine.setScale(0.92);
-    this.tweens.add({ targets: this.machine, scale: 1, duration: 120 });
+    this.kick = 0.12;
     return true;
   }
 
   updateShots(dt) {
     for (const s of this.shots) {
+      let h = D / 2;
       if (s.lob) {
         const L = s.lob, k = Math.min(1, (L.t += dt) / L.dur);
         if (L.ch.orbs.includes(L.orb)) L.to = pointAt(L.ch.track, L.orb.s); // follow the target as the chain moves
-        s.sp.setPosition(L.from.x + (L.to.x - L.from.x) * k, L.from.y + (L.to.y - L.from.y) * k).setScale(1 + 0.8 * Math.sin(Math.PI * k));
+        s.x = L.from.x + (L.to.x - L.from.x) * k;
+        s.y = L.from.y + (L.to.y - L.from.y) * k;
+        h += Math.sin(Math.PI * k) * 160;
         if (k >= 1) { s.done = true; this.land(s, L); }
-        continue;
+      } else {
+        const steps = Math.ceil(RULES.shotSpeed * dt / (D / 3));
+        for (let i = 0; i < steps && !s.done; i++) {
+          s.x += s.vx * dt / steps;
+          s.y += s.vy * dt / steps;
+          const hit = this.board.nearest(s.x, s.y, D * 0.85);
+          if (hit) { s.done = true; this.strike(s, hit.ch, hit.i, s.x, s.y); }
+          else if (s.x < -D || s.x > W + D || s.y < -D || s.y > H + D) s.done = true;
+        }
       }
-      const steps = Math.ceil(RULES.shotSpeed * dt / (D / 3));
-      for (let i = 0; i < steps && !s.done; i++) {
-        s.x += s.vx * dt / steps;
-        s.y += s.vy * dt / steps;
-        const hit = this.board.nearest(s.x, s.y, D * 0.85);
-        if (hit) { s.done = true; this.strike(s, hit.ch, hit.i, s.x, s.y); }
-        else if (s.x < -D || s.x > W + D || s.y < -D || s.y > H + D) s.done = true;
-      }
-      s.sp.setPosition(s.x, s.y);
-      s.sp.rotation += dt * 12;
+      s.obj.root.position.set(wx(s.x), h, wz(s.y));
+      s.obj.ball.rotation.y += dt * 12;
     }
-    for (const s of this.shots) if (s.done) s.sp.destroy();
+    for (const s of this.shots) if (s.done) this.world.remove(s.obj.root);
     this.shots = this.shots.filter(s => !s.done);
   }
   // A lobbed candy comes down: on its target if that's still there, else on whatever candy is nearest.
@@ -260,7 +402,7 @@ class Play extends Phaser.Scene {
     let ch = L.ch, i = ch.orbs.indexOf(L.orb);
     if (i < 0) {
       const near = this.board.nearest(L.to.x, L.to.y, 2 * D);
-      if (!near) { this.fx.explode(6, L.to.x, L.to.y); return; }
+      if (!near) { burst(L.to.x, L.to.y, 6, 0xffffff); return; }
       ({ ch, i } = near);
     }
     const p = pointAt(ch.track, ch.orbs[i].s); // which side it lands on follows where you aimed
@@ -270,15 +412,14 @@ class Play extends Phaser.Scene {
     const at = pointAt(ch.track, ch.orbs[i].s);
     this.hits = (this.hits || 0) + 1;
     const orb = this.board.hit(ch, i, x, y, s.c, s.kind);
-    if (orb) { orb.from = { x: s.sp.x, y: s.sp.y, t: this.t }; beep(330, 40, 0.03); }
+    if (orb) { orb.from = { x: s.x, y: s.y, t: this.t }; beep(330, 40, 0.03); }
     if (s.kind === 'bomb') {
       boom(280, 0.12);
-      this.fx.particleTint = 0xff4d6d;
-      this.fx.explode(30, at.x, at.y);
-      this.cameras.main.shake(160, 0.006);
+      burst(at.x, at.y, 40, 0xff4d6d, 420);
+      Object.assign(cam, { shake: 0.16, amp: 10 });
     } else if (s.kind === 'zap') {
       jingle([1318, 1046, 1568], 50);
-      this.cameras.main.flash(120, 255, 255, 255);
+      flash();
     }
   }
 
@@ -288,41 +429,70 @@ class Play extends Phaser.Scene {
       if (e.type === 'pop') {
         let sx = 0, sy = 0, n = 0;
         for (const b of e.orbs) {
-          const sp = this.sprites.get(b.id);
-          if (!sp) continue;
-          this.sprites.delete(b.id);
-          if (!sp.visible) { sp.destroy(); continue; }
-          sx += sp.x; sy += sp.y; n++;
-          this.fx.particleTint = b.c >= 0 ? CANDIES[b.c].color : 0xb8bdcc;
-          this.fx.explode(6, sp.x, sp.y);
-          this.tweens.add({ targets: sp, scale: 1.6, alpha: 0, duration: 220, onComplete: () => sp.destroy() });
+          const c = this.candies.get(b.id);
+          if (!c) continue;
+          this.candies.delete(b.id);
+          if (!c.root.visible) { this.world.remove(c.root); continue; }
+          const x = c.root.position.x + W / 2, y = c.root.position.z + H / 2;
+          sx += x; sy += y; n++;
+          burst(x, y, 6, b.c >= 0 ? CANDIES[b.c].color : 0xb8bdcc);
+          this.popping.push({ c, t: 0 });
         }
-        if (n) this.floatText(sx / n, sy / n, `+${e.points}`);
-        if (e.chain) this.floatText(sx / n || W / 2, (sy / n || H / 2) - 50, `COMBO x${e.chain + 1}!`, '#ffb020', 36);
+        if (n) floatText(sx / n, sy / n, `+${e.points}`);
+        if (e.chain) floatText(sx / n || W / 2, (sy / n || H / 2) - 50, `COMBO x${e.chain + 1}!`, '#ffb020', 36);
         beep(523 * 2 ** (e.chain * 3 / 12), 110, 0.06, 'sine');
       } else if (e.type === 'eat') {
-        for (const b of e.orbs) { this.sprites.get(b.id)?.destroy(); this.sprites.delete(b.id); }
-        const m = this.monsters[e.ch.track.hole];
-        this.tweens.add({ targets: m.mouth, scaleY: 0.1, duration: 90, yoyo: true, repeat: 1 });
-        this.tweens.add({ targets: m.body, scale: 1, duration: 120, yoyo: true });
+        for (const b of e.orbs) { const c = this.candies.get(b.id); if (c) this.world.remove(c.root); this.candies.delete(b.id); }
+        const m = this.monsters[e.ch.track.hole], h = this.level.holes[e.ch.track.hole];
+        m.chomp = 0.36;
         boom(180, 0.1);
         beep(110, 220, 0.07, 'sawtooth');
-        this.cameras.main.shake(200, 0.008);
-        this.floatText(m.body.x, m.body.y - 80, this.board.stars > 0 ? 'CHOMP! -1 ★' : 'CHOMP!', '#8e5cf7', 34);
+        Object.assign(cam, { shake: 0.2, amp: 12 });
+        floatText(h.x, h.y - 90, this.board.stars > 0 ? 'CHOMP! -1 ★' : 'CHOMP!', '#8e5cf7', 34);
+        this.updateHud();
+      } else if (e.type === 'power') { // a combo filled the meter: a random power-up, at once
+        const p = POWER[e.id];
+        this.banner(`${p.name.toUpperCase()}!`, 1700, p.desc);
+        jingle([659, 784, 988, 1318], 70);
+        if (e.id === 'rewind') beep(300, 400, 0.05, 'sine');
         this.updateHud();
       }
     }
     this.board.events.length = 0;
   }
 
-  // ---------- Drawing every frame ----------
+  // Short animations that run on game time: popping candies, monsters' mouths, the machine's kick and swap.
+  animate(dt) {
+    for (const p of this.popping) {
+      p.t += dt;
+      p.c.root.scale.setScalar(1 + p.t / 0.18 * 0.7);
+      if (p.t >= 0.18) this.world.remove(p.c.root);
+    }
+    this.popping = this.popping.filter(p => p.t < 0.18);
+    for (const m of this.monsters) {
+      const d = Math.max(0, ...m.chains.map(ch => this.board.danger(ch)));
+      let open = 0.3 + 0.7 * clamp((d - 0.45) / 0.5, 0, 1), size = 1;
+      if (m.chomp > 0) {
+        m.chomp -= dt;
+        open = 0.1 + 0.9 * Math.abs(Math.sin(m.chomp * Math.PI / 0.18));
+        size = 1 + 0.12 * Math.sin(m.chomp * Math.PI / 0.36);
+      }
+      m.mouth.scale.y = open;
+      m.root.scale.setScalar(size);
+    }
+    this.kick = Math.max(0, this.kick - dt);
+    this.swapT = Math.max(0, this.swapT - dt);
+    cam.shake = Math.max(0, cam.shake - dt);
+  }
+
+  // ---------- Drawing ----------
   render() {
     const alive = new Set();
     for (const ch of this.board.chains) for (const b of ch.orbs) {
       alive.add(b.id);
-      let sp = this.sprites.get(b.id);
-      if (!sp) this.sprites.set(b.id, sp = this.add.image(0, 0, candyKey(b.c)).setDepth(3));
-      if (b.s < 0) { sp.setVisible(false); continue; }
+      let c = this.candies.get(b.id);
+      if (!c) { this.candies.set(b.id, c = makeCandy(candyKey(b.c))); this.world.add(c.root); }
+      if (b.s < 0) { c.root.visible = false; continue; }
       const p = pointAt(ch.track, b.s);
       let { x, y } = p;
       if (b.from) { // a candy that just landed slides into its place
@@ -331,59 +501,68 @@ class Play extends Phaser.Scene {
         y = b.from.y + (y - b.from.y) * k;
         if (k >= 1) b.from = null;
       }
-      sp.setVisible(true).setPosition(x, y).setRotation(b.s / (D / 2));
+      c.root.visible = true;
+      c.root.position.set(wx(x), D / 2, wz(y));
+      c.root.rotation.y = -p.a;
+      c.ball.rotation.set(Math.PI / 2, -b.s / (D / 2), 0); // rolls as it goes
     }
-    for (const [id, sp] of this.sprites) if (!alive.has(id)) { sp.destroy(); this.sprites.delete(id); }
-    // monsters open wider as their chain gets close
-    for (const m of this.monsters) {
-      const d = Math.max(0, ...m.chains.map(ch => this.board.danger(ch)));
-      if (!this.tweens.isTweening(m.mouth)) m.mouth.scaleY = 0.85 * (0.3 + 0.7 * Phaser.Math.Clamp((d - 0.45) / 0.5, 0, 1));
-    }
+    for (const [id, c] of this.candies) if (!alive.has(id)) { this.world.remove(c.root); this.candies.delete(id); }
     // the gumball machine and the candies it holds
     const b = this.board;
-    this.machine.rotation = this.angle;
-    const curKey = b.next ? `candy-${b.next}` : candyKey(b.held[b.sel]), otherKey = candyKey(b.held[1 - b.sel]);
-    if (this.cur.texture.key !== curKey) this.cur.setTexture(curKey);
-    if (this.other.texture.key !== otherKey) this.other.setTexture(otherKey);
+    machine.group.rotation.y = -this.angle;
+    machine.group.scale.setScalar(1.25 * (1 - this.kick / 0.12 * 0.08));
+    setCandy(machine.cur, b.next || candyKey(b.held[b.sel]));
+    setCandy(machine.other, candyKey(b.held[1 - b.sel]));
+    const pop = 1 - this.swapT / 0.12 * 0.4;
+    machine.cur.root.scale.setScalar(0.82 * pop);
+    machine.other.root.scale.setScalar(0.72 * pop);
+    machine.cur.ball.rotation.y += 0.01;
     const key = `${b.held}|${b.sel}`;
     if (this.playing && key !== this.heldKey) { this.heldKey = key; updateSwap(b.held, b.sel); }
     this.drawAim();
+    // a little camera shake for bombs and chomps
+    const base = camera.position.clone();
+    if (cam.shake > 0) camera.position.add(v3.set((Math.random() - 0.5) * cam.amp, 0, (Math.random() - 0.5) * cam.amp));
+    renderer.render(scene, camera);
+    camera.position.copy(base);
   }
 
-  // Aim guide: a short dotted line; with Licorice Laser, a line all the way to the candy you'll land on.
   drawAim() {
-    const g = this.aimG.clear();
-    this.ring.setVisible(false);
+    aimDots.count = 0;
+    ring.visible = false;
     if (!this.aim || this.ended || !this.playing || this.intro > 0) return;
-    const m = this.level.launcher, a = this.angle;
+    const m = this.level.launcher, a = this.angle, dots = [];
     if (this.board.laser > 0) {
       const t = this.board.nearest(this.aim.x, this.aim.y, 2 * D), end = t || this.aim, len = Math.hypot(end.x - m.x, end.y - m.y);
-      g.fillStyle(0x3a0d2e, 0.8);
-      for (let d = 70; d < len; d += 16) g.fillCircle(m.x + (end.x - m.x) * d / len, m.y + (end.y - m.y) * d / len, 4);
-      if (t) this.ring.setPosition(t.x, t.y).setVisible(true).setTint(0x3a0d2e);
+      for (let d = 76; d < len && dots.length < AIM_DOTS; d += 16) dots.push([m.x + (end.x - m.x) * d / len, m.y + (end.y - m.y) * d / len, 1]);
+      aimDots.material.color.set(0x3a0d2e);
+      if (t) { ring.position.set(wx(t.x), D / 2, wz(t.y)); ring.visible = true; }
     } else if (settings.aim) {
-      g.fillStyle(0xffffff, 0.85);
-      for (let d = 70; d < 280; d += 18) g.fillCircle(m.x + Math.cos(a) * d, m.y + Math.sin(a) * d, 5 - d / 90);
+      for (let d = 76; d < 290; d += 18) dots.push([m.x + Math.cos(a) * d, m.y + Math.sin(a) * d, 1.1 - d / 400]);
+      aimDots.material.color.set(0xffffff);
     }
-  }
-
-  // ---------- Power-ups ----------
-  powerPicked(id) {
-    this.board.usePick(id);
-    this.banner(POWER[id].name.toUpperCase(), 900, 48);
-    if (id === 'rewind') beep(300, 400, 0.05, 'sine');
-    this.updateHud();
+    dots.forEach(([x, y, s], i) => {
+      dummy.position.set(wx(x), D / 2, wz(y));
+      dummy.scale.setScalar(s);
+      dummy.updateMatrix();
+      aimDots.setMatrixAt(i, dummy.matrix);
+    });
+    aimDots.count = dots.length;
+    aimDots.instanceMatrix.needsUpdate = true;
   }
 }
 
-// Phaser draws text once, so wait (briefly) for the font before starting the game.
-Promise.race([document.fonts?.load(`700 32px ${FONT}`), new Promise(r => setTimeout(r, 2000))]).finally(() => {
-  game = new Phaser.Game({
-    type: Phaser.AUTO,
-    width: W,
-    height: H,
-    backgroundColor: '#ffe3ee',
-    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-    scene: Play,
-  });
+const play = new Play();
+play.manual = false; // the playtest sets this and steps the game itself
+window.game = play;
+addEventListener('resize', resize);
+resize();
+play.load({ play: false, level: nextLevel() });
+let last = performance.now();
+renderer.setAnimationLoop(now => {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  if (play.manual || app.state === 'paused') return; // paused: the last frame stays up
+  play.update(dt);
+  play.render();
 });

@@ -48,11 +48,31 @@
   #levelGrid button small { font-size: .7rem; color: var(--gold); letter-spacing: .05em; }
   #levelGrid button.next { background: var(--pink); color: #fff; }
   #levelGrid button.next small { color: #fff; }
-  /* Power-up pick */
-  #pickCards { display: flex; flex-direction: column; gap: 8px; }
-  .card { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 14px; text-align: left; }
-  .card b { font-size: 1.15rem; color: var(--pink); }
-  .card small { color: var(--muted); font-size: .9rem; }
+  /* The 3D board fills the window; everything else sits on top of it. */
+  #view { position: fixed; inset: 0; display: block; }
+  #ui { z-index: 3; }
+  /* HUD: level, score, stars and the combo meter (laid out even when hidden, so the camera can leave room for it). */
+  #hud { position: fixed; z-index: 1; top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 84px)); margin-left: -32px; box-sizing: border-box; padding: 8px 14px 10px; background: rgb(255 255 255 / .78); border-radius: 18px; box-shadow: 0 3px 0 rgb(255 156 194 / .5); pointer-events: none; }
+  .hudRow { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-weight: 700; }
+  #hudLevel { font-size: 1.05rem; }
+  #hudScore { color: var(--pink); font-size: 1rem; }
+  #hudStars { font-size: 1.35rem; color: var(--gold); line-height: 1; letter-spacing: .05em; }
+  #hudStars .off { color: #ead0dc; }
+  .meter { position: relative; height: 18px; margin-top: 6px; border-radius: 9px; background: #f3d6e3; overflow: hidden; }
+  #meterFill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--pink); border-radius: 9px; transition: width .2s; }
+  #meterText { position: relative; display: block; text-align: center; font-size: .72rem; font-weight: 700; line-height: 18px; letter-spacing: .04em; }
+  /* Big messages (level cards, power-ups) and the little numbers that float up from pops. */
+  #banner { position: fixed; z-index: 2; left: 0; right: 0; top: 40%; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0 16px; text-align: center; pointer-events: none; animation: pop .25s cubic-bezier(.3, 1.6, .5, 1); }
+  #banner[hidden] { display: none; }
+  #bannerTitle { font-size: clamp(1.9rem, 9vw, 3.4rem); font-weight: 700; color: var(--text); -webkit-text-stroke: 7px #fff; paint-order: stroke fill; line-height: 1.05; }
+  #bannerSub { font-size: clamp(1rem, 4.4vw, 1.5rem); font-weight: 700; color: var(--pink); -webkit-text-stroke: 5px #fff; paint-order: stroke fill; max-width: 26em; }
+  @keyframes pop { from { transform: scale(.6); opacity: 0; } }
+  #floats { position: fixed; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
+  .float { position: absolute; transform: translate(-50%, -50%); font-weight: 700; -webkit-text-stroke: 5px #fff; paint-order: stroke fill; white-space: nowrap; animation: rise .8s ease-out forwards; }
+  @keyframes rise { to { margin-top: -60px; opacity: 0; } }
+  #flash { position: fixed; inset: 0; z-index: 1; background: #fff; opacity: 0; pointer-events: none; }
+  #flash.on { animation: flash .25s ease-out; }
+  @keyframes flash { from { opacity: .7; } }
   /* Fixed buttons over the game: pause (top right) and swap (bottom, under your thumb). */
   .fixed { position: fixed; z-index: 1; }
   #pauseBtn { top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); width: 48px; padding: 0; opacity: .9; font-size: 1rem; }
@@ -63,7 +83,12 @@
   .dot.wild { background: conic-gradient(#ff4d6d, #ffc93c, #2ec98a, #3d8bff, #9b5cff, #ff8a2b, #ff4d6d) !important; }
   .dot.jaw { background: #8a8fa3 !important; }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
 </head>
 <body>
 <div id="ui">
@@ -112,12 +137,6 @@
     <button data-action="menu">Main menu</button>
   </section>
 
-  <section class="screen" id="pick" hidden>
-    <h2>SWEET COMBO!</h2>
-    <p>Pick a power-up. It lasts until the end of this level.</p>
-    <div id="pickCards"></div>
-  </section>
-
   <section class="screen" id="clear" hidden>
     <h2 id="clearTitle">LEVEL CLEAR!</h2>
     <div class="stars" id="clearStars"></div>
@@ -148,14 +167,21 @@
     <button data-action="menu">Main menu</button>
   </section>
 </div>
+<div id="hud" style="visibility: hidden">
+  <div class="hudRow"><span id="hudLevel"></span><span id="hudStars"></span></div>
+  <div class="hudRow"><span id="hudScore"></span></div>
+  <div class="meter"><i id="meterFill"></i><span id="meterText"></span></div>
+</div>
+<div id="banner" hidden><b id="bannerTitle"></b><span id="bannerSub"></span></div>
+<div id="floats"></div>
+<div id="flash"></div>
 <button class="fixed" id="pauseBtn" aria-label="Pause" hidden>&#10074;&#10074;</button>
 <button class="fixed" id="swapBtn" aria-label="Swap candies" hidden><span class="dot sel" id="dot0"></span>&#8644;<span class="dot" id="dot1"></span></button>
 
 <script src="js/data.js"></script>
 <script src="js/levels.js"></script>
 <script src="js/chain.js"></script>
-<script src="js/art.js"></script>
 <script src="js/ui.js"></script>
-<script src="js/game.js"></script>
+<script type="module" src="js/game.js"></script>
 </body>
 </html>
