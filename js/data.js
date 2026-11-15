@@ -19,7 +19,7 @@ const CANDIES = [
 const WILD = -1;                  // rainbow candy: takes the color of whatever it hits (shooter only)
 const JAW = -2;                   // jawbreaker: never matches, cracks when a match pops right next to it
 
-// Picked 1 of 3 when the combo meter fills. Every one of them ends when the level ends.
+// Picked 1 of 3 when the combo meter fills (chain reactions fill it, plain matches don't). Every one of them ends when the level ends.
 const POWERUPS = [
   { id: 'bomb', name: 'Cherry Bomb', desc: 'Your next shot explodes and clears every candy around it.' },
   { id: 'zap', name: 'Pop Rocks', desc: 'Your next shot zaps every candy of the color it hits, on every road.' },
@@ -42,8 +42,8 @@ const RULES = {
   slowTime: 10, slowMul: 0.35,
   laserTime: 15,
   bombRadius: 2.2 * D,
-  meterFirst: 200,     // combo points for the first power-up of a level; each pick raises it by half
-  meterGrow: 1.5,
+  meterFirst: 1,       // chain reactions for the first power-up of a level...
+  meterStep: 1,        // ...and each pick after that needs one more
   starBonus: 500,      // points per star left when a level is cleared
 };
 

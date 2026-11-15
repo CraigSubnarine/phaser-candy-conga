@@ -104,7 +104,7 @@ class Play extends Phaser.Scene {
     if (b.next) st.push(`Next shot: ${POWER[b.next].name}`);
     if (b.slow > 0) st.push(`Syrup ${Math.ceil(b.slow)}`);
     if (b.laser > 0) st.push(`Laser ${Math.ceil(b.laser)}`);
-    this.statusText.setText(st.length ? st.join(' · ') : 'COMBO METER');
+    this.statusText.setText(st.length ? st.join(' · ') : `COMBO METER ${b.meter}/${b.meterNeed}`);
   }
 
   // A big message in the middle of the screen (and an optional smaller line under it).
@@ -298,9 +298,8 @@ class Play extends Phaser.Scene {
           this.tweens.add({ targets: sp, scale: 1.6, alpha: 0, duration: 220, onComplete: () => sp.destroy() });
         }
         if (n) this.floatText(sx / n, sy / n, `+${e.points}`);
-        if (e.chain) this.floatText(sx / n || W / 2, (sy / n || H / 2) - 50, `CHAIN x${e.chain + 1}!`, '#2ec98a', 36);
-        else if (e.combo >= 3 && !e.power) this.floatText(sx / n || W / 2, (sy / n || H / 2) - 50, `COMBO x${e.combo}`, '#ffb020', 32);
-        beep(523 * 2 ** ((e.chain * 2 + Math.min(e.combo, 6)) / 12), 110, 0.06, 'sine');
+        if (e.chain) this.floatText(sx / n || W / 2, (sy / n || H / 2) - 50, `COMBO x${e.chain + 1}!`, '#ffb020', 36);
+        beep(523 * 2 ** (e.chain * 3 / 12), 110, 0.06, 'sine');
       } else if (e.type === 'eat') {
         for (const b of e.orbs) { this.sprites.get(b.id)?.destroy(); this.sprites.delete(b.id); }
         const m = this.monsters[e.ch.track.hole];

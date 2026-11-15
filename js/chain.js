@@ -37,9 +37,8 @@ class Board {
     this.speed = opts.speed ?? this.spec.speed;
     this.stars = opts.stars ?? 3;
     this.score = opts.score ?? 0;
-    this.combo = 0;        // shots in a row that made a match
-    this.chainN = 0;       // chain reactions from the last shot
-    this.meter = 0;        // combo points towards the next power-up
+    this.chainN = 0;       // chain reactions set off by the last shot (1+ makes it a combo)
+    this.meter = 0;        // chain reactions towards the next power-up (plain matches don't count)
     this.meterNeed = RULES.meterFirst;
     this.slow = 0;         // seconds of Syrup left
     this.laser = 0;        // seconds of Licorice Laser left
@@ -119,17 +118,16 @@ class Board {
     if (a > 0 && o[a - 1].c === JAW && o[a].s - o[a - 1].s <= TOUCH) a--;
     if (b < o.length - 1 && o[b + 1].c === JAW && o[b + 1].s - o[b].s <= TOUCH) b++;
     const popped = o.splice(a, b - a + 1);
-    if (reaction) this.chainN++;
-    else this.combo++;
-    const points = Math.round(popped.length * 10 * (1 + this.chainN) * (1 + 0.5 * (this.combo - 1)));
+    if (reaction) { this.chainN++; this.meter++; } // a combo: one shot, more than one pop
+    const points = popped.length * 10 * (1 + this.chainN);
     this.score += points;
-    this.meter += points;
-    this.events.push({ type: 'pop', ch, orbs: popped, color: c, points, chain: this.chainN, combo: this.combo });
+    this.events.push({ type: 'pop', ch, orbs: popped, color: c, points, chain: this.chainN });
     return popped.length;
   }
 
   // A shot (color c) reached candy i of chain ch at (x, y). kind: null, 'bomb' or 'zap'. Returns the new candy, if any.
   hit(ch, i, x, y, c, kind) {
+    this.chainN = 0;
     const orb = ch.orbs[i], p = pointAt(ch.track, orb.s);
     if (kind === 'bomb' || kind === 'zap') {
       if (kind === 'bomb') this.blast(p.x, p.y, RULES.bombRadius);
@@ -149,7 +147,7 @@ class Board {
     this.resolve(o);
     this.chainN = 0;
     this.events.push({ type: 'insert', ch, orb });
-    if (!this.matchAt(ch, k, false)) this.combo = 0;
+    this.matchAt(ch, k, false);
     return orb;
   }
 
@@ -168,7 +166,7 @@ class Board {
     ch.orbs = ch.orbs.filter(b => !gone.has(b));
     const points = popped.length * 10;
     this.score += points;
-    this.events.push({ type: 'pop', ch, orbs: popped, color: popped[0].c, points, chain: 0, combo: this.combo, power: true });
+    this.events.push({ type: 'pop', ch, orbs: popped, color: popped[0].c, points, chain: 0, power: true });
   }
 
   // The nearest candy on screen within r of (x, y).
@@ -218,7 +216,7 @@ class Board {
   // Called when the meter is full and a power-up has been picked.
   usePick(id) {
     this.meter = Math.max(0, this.meter - this.meterNeed);
-    this.meterNeed = Math.round(this.meterNeed * RULES.meterGrow);
+    this.meterNeed += RULES.meterStep;
     this.apply(id);
   }
   apply(id) {

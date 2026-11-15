@@ -12,11 +12,11 @@ No build step and no asset files: the art is drawn in code, the sounds are synth
 
 ## How it plays
 
-- **The chain:** candies come out of a jar at the start of each road and roll towards a monster. Shots land in the chain and push it along. 3+ touching candies of one color pop. If that leaves the same color on both sides of the gap, the front part slides back to meet the back part, and they pop too: a **chain reaction**. Shots that make a match in a row build a **combo**. Both multiply the points.
+- **The chain:** candies come out of a jar at the start of each road and roll towards a monster. Shots land in the chain and push it along. 3+ touching candies of one color pop. If that leaves the same color on both sides of the gap, the front part slides back to meet the back part, and they pop too: a **chain reaction**. One shot that pops more than once is a **combo** (x2, x3...), and each extra pop scores more.
 - **Your candies:** you hold two, in random colors (only colors still on the board), and swap between them. Now and then you get a rainbow candy that matches anything.
 - **Stars:** you start with 3. A candy reaching a monster costs a star, and the chain is pushed back. With no stars left, it's over.
 - **Jawbreakers** (from level 25): grey candies that never match. They crack when a match pops right next to them.
-- **Power-ups:** matches fill the combo meter. When it's full, pick 1 of 3; it lasts until the end of the level:
+- **Power-ups:** combos fill the combo meter; plain matches don't. Each chain reaction is one notch: 1 for the first power-up of a level, then 2, then 3... When it's full, pick 1 of 3; it lasts until the end of the level:
   - **Cherry Bomb:** your next shot explodes.
   - **Pop Rocks:** your next shot zaps every candy of the color it hits.
   - **Taffy Pull:** pulls every chain back.
@@ -40,7 +40,7 @@ No build step and no asset files: the art is drawn in code, the sounds are synth
 
 ## Replay and competition hooks
 
-- A score always: matches × chain reactions × combo, plus a star bonus per level.
+- A score always: candies popped, multiplied by how deep in the combo they popped, plus a star bonus per level.
 - Star ratings on 100+ levels, and a running total on the main menu.
 - Gauntlet: an endless climb through every level with one set of stars (best score + level saved).
 - Seeded levels: everyone gets the same level *n*, ready for per-level and Gauntlet leaderboards.

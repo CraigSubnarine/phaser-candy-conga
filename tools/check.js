@@ -7,7 +7,7 @@ const vm = require('vm');
 // Load the game's plain scripts the way the page does: in order, sharing globals.
 for (const f of ['data.js', 'levels.js', 'chain.js']) vm.runInThisContext(fs.readFileSync(path.join(__dirname, '..', 'js', f), 'utf8'), { filename: f });
 const G = name => vm.runInThisContext(name);
-const [makeLevel, levelProblems, Board, pointAt, D, JAW, STEP] = ['makeLevel', 'levelProblems', 'Board', 'pointAt', 'D', 'JAW', 'STEP'].map(G);
+const [makeLevel, levelProblems, Board, pointAt, D, JAW, STEP, RULES] = ['makeLevel', 'levelProblems', 'Board', 'pointAt', 'D', 'JAW', 'STEP', 'RULES'].map(G);
 
 let failed = 0;
 const check = (name, ok, detail = '') => {
@@ -67,11 +67,12 @@ const run = (b, secs) => { for (let i = 0; i < secs * 60; i++) b.step(1 / 60); }
   const { b, ch } = boardWith([0, 0, 1]);
   b.insert(ch, 1, 0, -1);
   check('a shot that makes 3 of a color pops them', colorsOf(ch) === '1' && b.score === 30, colorsOf(ch));
+  check('...but a plain match is no combo: the meter stays empty', b.meter === 0 && b.chainN === 0, `meter ${b.meter}`);
 }
 {
   const { b, ch } = boardWith([2, 1, 3]);
   b.insert(ch, 1, 0, 1);
-  check('a shot with no match just joins the chain (and resets the combo)', colorsOf(ch) === '2,1,0,3' && b.combo === 0, colorsOf(ch));
+  check('a shot with no match just joins the chain', colorsOf(ch) === '2,1,0,3' && b.meter === 0, colorsOf(ch));
   check('the candies ahead are pushed up by one candy', Math.abs(ch.orbs[3].s - (200 + 3 * D)) < 0.01);
 }
 {
@@ -79,7 +80,11 @@ const run = (b, secs) => { for (let i = 0; i < secs * 60; i++) b.step(1 / 60); }
   b.insert(ch, 3, 1, -1); // 1,1,1 pops; the 0s on both sides of the gap pull together and pop too
   run(b, 2);
   check('the magnet pulls matching colors together: a chain reaction', colorsOf(ch) === '3,3' && b.chainN >= 1, `${colorsOf(ch)} chain ${b.chainN}`);
-  check('chain reactions score more', b.score > 30 + 30, `${b.score}`);
+  check('chain reactions score more', b.score === 30 + 60, `${b.score}`);
+  check('a chain reaction is a combo: one notch on the meter', b.meter === 1, `meter ${b.meter}`);
+  b.meter = b.meterNeed;
+  b.usePick('slow');
+  check('each power-up picked needs one more combo for the next', b.meter === 0 && b.meterNeed === RULES.meterFirst + RULES.meterStep, `${b.meter}/${b.meterNeed}`);
 }
 {
   const { b, ch } = boardWith([4, 2, 1, 1]);

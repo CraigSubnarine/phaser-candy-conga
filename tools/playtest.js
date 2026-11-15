@@ -154,7 +154,9 @@ async function run(browser, name, options, full) {
 
   // ---------- Breaches ----------
   await start('levels', 5);
-  await page.evaluate(() => { __step(60 * 3); scene().board.speed = 3000; });
+  // (at test speed one frame moves the chain past the jar's spacing: the gaps close into chain reactions, so keep
+  // the power-up pick out of the way)
+  await page.evaluate(() => { __step(60 * 3); Object.assign(scene().board, { speed: 3000, meterNeed: Infinity }); });
   await page.evaluate(() => { for (let i = 0; i < 600 && scene().board.stars === 3; i++) __step(1); });
   const breach = await page.evaluate(() => { const ch = scene().board.chains[0]; return { stars: scene().board.stars, retreat: ch.retreat > 0, head: ch.orbs.at(-1).s }; });
   await page.evaluate(() => { scene().board.speed = 0; __step(60); });
