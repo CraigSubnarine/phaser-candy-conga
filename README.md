@@ -8,7 +8,7 @@ No build step and no asset files: the 3D models are built from shapes in code, t
 - **Repo:** https://github.com/CraigSubnarine/phaser-candy-conga
 - **Run locally:** the `gamedev` preview server at http://localhost:8765/phaser-candy-conga/ (or `node tools/server.js` from a script)
 - **Controls:** phone: touch anywhere and drag to aim, let go to shoot. Tap the gumball machine, or the button at the bottom, to swap your two candies. Computer: aim with the mouse, click to shoot, right-click or Space to swap. Pause with the top-right button or Esc / P.
-- **Status:** v2, live: moved from Phaser to three.js (glossy rolling candies, candy-cane curbs, 3D monsters and gumball machine, a tilted camera). Levels mode, Gauntlet and power-ups all work; the leaderboard (shared Supabase backend) is next.
+- **Status:** v2, live: moved from Phaser to three.js (glossy rolling candies, candy-cane curbs, 3D monsters and gumball machine, a tilted camera). Levels mode, Gauntlet, power-ups and leaderboards (Google sign-in, shared Supabase backend) all work.
 
 ## How it plays
 
@@ -45,7 +45,8 @@ No build step and no asset files: the 3D models are built from shapes in code, t
 - Star ratings on 100+ levels, and a running total on the main menu.
 - Gauntlet: an endless climb through every level with one set of stars (best score + level saved).
 - Seeded levels: everyone gets the same level *n*, ready for per-level and Gauntlet leaderboards.
-- Next: Supabase leaderboards (Gauntlet, per level, a daily level), then online versus on the same level.
+- Leaderboards and accounts (2026-11-16): optional Google sign-in through the Arcade's shared backend (`js/arcade.js`). Boards: the Gauntlet and every level (`level-<n>`), each player's best. Signed in, a cleared level or a finished Gauntlet posts its score and shows your rank on that board. The main menu shows your player name (Change name / Sign out). Stars, level bests and the Gauntlet best are kept in a cloud save. Guests play as before, and their bests post the first time they sign in.
+- Next: a daily level board, then online versus on the same level.
 
 ## Code layout
 
@@ -55,6 +56,7 @@ No build step and no asset files: the 3D models are built from shapes in code, t
 - `js/chain.js`: the chain model (Board): rolling, inserting, matching, chain reactions, monsters, power-ups, the candies you hold. No three.js, so it's tested in Node.
 - `js/art.js` (module): the 3D models and textures: candies, gumball machine, monsters, jars, curbs, the painted board.
 - `js/ui.js`: saves, sound, menus and input.
+- `js/arcade.js`: Google sign-in, leaderboards and cloud saves through the Arcade's shared Supabase backend. The same file goes in every game (see `GameDev/CLAUDE.md`); `node tools/arcade-check.js` checks its score queue.
 - `js/game.js` (module): the three.js scene: camera fit, drawing the board, shots, aiming (a ray onto the board), effects, HUD.
 
 ## Testing

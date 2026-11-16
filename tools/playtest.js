@@ -303,6 +303,84 @@ async function run(browser, name, options, full) {
   }
 }
 
+// Sign-in and the leaderboards (js/arcade.js). As a guest it reads the real, shared leaderboard; a real Google sign-in
+// can't run headless, so the signed-in checks stand in a fake account and check what the menus do with it.
+async function accountChecks(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 375, height: 812 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const page = await ctx.newPage(), errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  await page.goto(url);
+  await page.waitForFunction(() => !!window.game, null, { timeout: 20000 });
+  const shown = sel => page.evaluate(q => [...document.querySelectorAll(q)].filter(e => !e.hidden && e.offsetParent).length, sel);
+  const text = id => page.evaluate(i => document.getElementById(i).textContent, id);
+  const loaded = () => page.waitForFunction(() => document.getElementById('boardYou').textContent !== 'Loading...', null, { timeout: 15000 });
+  check('account: a guest sees Sign in with Google on the main menu', (await shown('#main button.signin')) === 1 && (await shown('#main .acct')) === 0);
+  await page.tap('#main [data-action=board]');
+  await loaded();
+  const g = await page.evaluate(() => ({ you: document.getElementById('boardYou').textContent, tab: document.querySelector('#boardTabs .on')?.dataset.board, pick: document.getElementById('boardPick').hidden }));
+  check('account: the leaderboard opens on the Gauntlet board and loads for a guest', g.tab === 'gauntlet' && g.pick && !g.you.startsWith("Couldn't"), JSON.stringify(g));
+  await page.tap('#boardTabs [data-board=level]');
+  await loaded();
+  const l1 = { name: await text('boardLevel'), prevOff: await page.evaluate(() => document.querySelector('[data-action=boardPrev]').disabled) };
+  await page.tap('[data-action=boardNext]');
+  await loaded();
+  check('account: By level shows one level at a time, with arrows to change it', l1.name === 'Level 1' && l1.prevOff && (await text('boardLevel')) === 'Level 2', JSON.stringify(l1));
+  await page.screenshot({ path: path.join(out, 'account-01-board-guest.png'), timeout: 30000 }).catch(() => {});
+  await page.tap('#board [data-action=back]');
+  check('account: Back from the leaderboard returns to the main menu', await visible(page, 'main'));
+  await page.evaluate(() => gauntletOver({ board: { score: 5000 }, n: 3 }));
+  check("account: a guest's Gauntlet over offers sign-in to post the best", (await shown('#over button.signin')) === 1);
+  await page.evaluate(() => toMenu());
+
+  // A fake signed-in player, who played as a guest before (two level bests and a Gauntlet best on this device).
+  await page.evaluate(() => {
+    window.__posted = [];
+    store.set('conga-posted', {});
+    Object.assign(progress.best, { 1: 1000, 2: 2000 });
+    Object.assign(account, {
+      user: { id: 'me' }, name: 'Candy Queen',
+      post: async (score, mode) => { __posted.push(`${mode}:${score}`); return true; },
+      standing: async () => ({ rank: 2, of: 5, score: 4321 }),
+      top: async () => [{ name: '<img src=x onerror=alert(1)>', score: 9000, me: false }, { name: 'Candy Queen', score: 4321, me: true }],
+      sync: async data => data,
+    });
+    updateAccount();
+    updateAccount(); // a second change (say, a new name) mustn't post the same bests again
+  });
+  await page.waitForTimeout(200);
+  const first = await page.evaluate(() => ({ posted: __posted.slice().sort(), name: document.querySelector('#main .acctName').textContent, signin: [...document.querySelectorAll('#main .signin')].every(e => e.hidden) }));
+  check('account: signed in, the main menu says who you are and hides Sign in', first.name === 'Candy Queen' && first.signin, JSON.stringify(first));
+  check("account: signing in posts this device's bests once (Gauntlet and each level)", JSON.stringify(first.posted) === JSON.stringify(['gauntlet:5000', 'level-1:1000', 'level-2:2000']), JSON.stringify(first.posted));
+  await page.evaluate(() => { __posted.length = 0; levelCleared({ n: 4, board: { stars: 3, score: 4321 } }); });
+  await page.waitForFunction(() => document.getElementById('clearRank').textContent.includes('#'), null, { timeout: 5000 }).catch(() => {});
+  const clear = { rank: await text('clearRank'), posted: await page.evaluate(() => __posted) };
+  check('account: a cleared level posts to its own board and shows your rank there', clear.rank === 'Level 4 leaderboard: #2 of 5 players' && JSON.stringify(clear.posted) === '["level-4:4321"]', JSON.stringify(clear));
+  await page.screenshot({ path: path.join(out, 'account-02-clear.png'), timeout: 30000 }).catch(() => {});
+  await page.evaluate(() => { __posted.length = 0; gauntletOver({ board: { score: 7777 }, n: 9 }); });
+  await page.waitForFunction(() => document.getElementById('overRank').textContent.includes('#'), null, { timeout: 5000 }).catch(() => {});
+  const over = { rank: await text('overRank'), posted: await page.evaluate(() => __posted) };
+  check('account: a Gauntlet run posts to the Gauntlet board and shows your rank', over.rank === 'Gauntlet leaderboard: #2 of 5 players' && JSON.stringify(over.posted) === '["gauntlet:7777"]', JSON.stringify(over));
+  await page.tap('#over [data-action=board]');
+  await page.waitForFunction(() => document.querySelectorAll('#boardList li').length === 2, null, { timeout: 5000 });
+  const board = await page.evaluate(() => ({ me: document.querySelector('#boardList li.me .n')?.textContent, injected: !!document.querySelector('#boardList img') }));
+  check('account: the board highlights you, and names show as plain text (no HTML gets in)', board.me === 'Candy Queen' && !board.injected, JSON.stringify(board));
+  await page.screenshot({ path: path.join(out, 'account-03-board.png'), timeout: 30000 }).catch(() => {});
+  await page.tap('#board [data-action=back]');
+  check('account: Back from the board returns to the Gauntlet over screen', await visible(page, 'over'));
+  await page.evaluate(() => toMenu());
+  await page.screenshot({ path: path.join(out, 'account-04-menu-signed-in.png'), timeout: 30000 }).catch(() => {});
+  await page.tap('#main [data-action=rename]');
+  await page.fill('#nameInput', 'ab');
+  await page.tap('#nameScreen [data-action=saveName]');
+  check('account: a name that breaks the rules gets a message, not a save', (await text('nameErr')).includes('3-20'));
+  await page.tap('#nameScreen [data-action=back]');
+  await page.tap('#main [data-action=signout]');
+  await page.waitForFunction(() => !document.querySelector('#main button.signin').hidden, null, { timeout: 5000 }).catch(() => {});
+  check('account: Sign out shows Sign in again', (await shown('#main button.signin')) === 1 && (await shown('#main .acct')) === 0);
+  check('account: no page errors', !errors.length, errors.slice(0, 3).join(' | '));
+  await ctx.close();
+}
+
 (async () => {
   const server = await serve(path.resolve(__dirname, '..'));
   url = `${server.url}/index.html`;
@@ -311,6 +389,7 @@ async function run(browser, name, options, full) {
   try {
     await run(browser, 'phone', { viewport: { width: 375, height: 812 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, true);
     await run(browser, 'desktop', { viewport: { width: 1280, height: 800 } }, false);
+    await accountChecks(browser);
   } finally {
     await browser.close();
     server.close();

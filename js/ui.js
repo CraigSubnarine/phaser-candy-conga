@@ -128,9 +128,112 @@ function resumeGame() {
   showScreen(null);
   document.activeElement?.blur();
 }
+// Settings, the leaderboard and the name screen go back to wherever they were opened from.
+function setBack() { app.settingsFrom = { paused: 'pause', over: 'over', clear: 'clear' }[app.state] ?? 'main'; }
 function openSettings() {
-  app.settingsFrom = app.state === 'paused' ? 'pause' : 'main';
+  setBack();
   showScreen('settings');
+}
+
+// ---------- Account and leaderboards (js/arcade.js: Google sign-in through the Arcade's shared Supabase) ----------
+// Signing in is optional. Boards: 'gauntlet', and one per level ('level-12'), each player's best. The cloud save keeps
+// your stars, level bests and Gauntlet best.
+const account = createArcade('phaser-candy-conga', updateAccount);
+let syncedFor = null; // the player whose cloud save has been merged in this visit
+updateAccount(); // signed out until Supabase says otherwise (a moment after load, if you have a session)
+function updateAccount() {
+  const inn = !!account.user;
+  for (const el of document.querySelectorAll('.signin')) el.hidden = inn || !account.online;
+  for (const el of document.querySelectorAll('.acct')) el.hidden = !inn;
+  for (const el of document.querySelectorAll('.acctName')) el.textContent = account.name ?? ''; // player input: text only
+  if (inn && syncedFor !== account.user.id) { syncedFor = account.user.id; syncSave(); }
+}
+// Scores this device has already posted, so a sign-in posts guest play once: { gauntlet, levels: { n: score } }.
+const posted = () => ({ gauntlet: 0, levels: {}, ...store.get('conga-posted', {}) });
+function markPosted(mode, score) {
+  const p = posted();
+  if (mode === 'gauntlet') p.gauntlet = Math.max(p.gauntlet, score);
+  else p.levels[mode.slice(6)] = Math.max(p.levels[mode.slice(6)] ?? 0, score);
+  store.set('conga-posted', p);
+}
+// Merges this device's progress with the cloud save (the best of each), then posts any best not posted yet.
+async function syncSave() {
+  const merged = await account.sync({ progress, gauntletBest }, (here, cloud) => ({
+    progress: { ...mergeMax(here.progress, cloud.progress), stars: mergeMax(here.progress.stars, cloud.progress?.stars), best: mergeMax(here.progress.best, cloud.progress?.best) },
+    gauntletBest: (cloud.gauntletBest?.score ?? 0) > here.gauntletBest.score ? cloud.gauntletBest : here.gauntletBest,
+  }));
+  Object.assign(progress, merged.progress);
+  gauntletBest = merged.gauntletBest;
+  saveProgress();
+  store.set('conga-gauntlet-best', gauntletBest);
+  const p = posted();
+  if (gauntletBest.score > p.gauntlet) account.post(gauntletBest.score, 'gauntlet');
+  for (const [n, score] of Object.entries(progress.best)) if (score > (p.levels[n] ?? 0)) account.post(score, `level-${n}`);
+  store.set('conga-posted', { gauntlet: Math.max(p.gauntlet, gauntletBest.score), levels: mergeMax(p.levels, progress.best) });
+  if (app.state === 'menu') updateMain();
+}
+async function signIn() {
+  const msg = document.querySelector('.acctMsg');
+  msg.hidden = true;
+  if (!(await account.signIn())) { msg.textContent = "Can't reach sign-in right now. Check your connection."; msg.hidden = false; }
+}
+// The leaderboard: the Gauntlet, or one level at a time (pick it with the arrows).
+let boardMode = 'gauntlet', boardLoad = 0;
+async function openBoard(mode = boardMode) {
+  if ($('board').hidden) setBack();
+  boardMode = mode;
+  const key = mode === 'gauntlet' ? 'gauntlet' : `level-${mode}`, load = ++boardLoad;
+  for (const b of document.querySelectorAll('#boardTabs button')) b.classList.toggle('on', (b.dataset.board === 'gauntlet') === (mode === 'gauntlet'));
+  $('boardPick').hidden = mode === 'gauntlet';
+  if (mode !== 'gauntlet') {
+    $('boardLevel').textContent = `Level ${mode}`;
+    document.querySelector('[data-action=boardPrev]').disabled = mode <= 1;
+    document.querySelector('[data-action=boardNext]').disabled = mode >= levelsShown();
+  }
+  showScreen('board');
+  $('boardList').replaceChildren();
+  $('boardYou').textContent = 'Loading...';
+  const [rows, me] = await Promise.all([account.top(key), account.standing(key)]);
+  if (load !== boardLoad || $('board').hidden) return; // another board was picked meanwhile
+  if (!rows) { $('boardYou').textContent = "Couldn't load the leaderboard. Check your connection."; return; }
+  $('boardList').replaceChildren(...rows.map((r, i) => {
+    const li = document.createElement('li');
+    if (r.me) li.className = 'me';
+    for (const [cls, text] of [['r', i + 1], ['n', r.name], ['s', r.score.toLocaleString()]]) {
+      const span = document.createElement('span');
+      span.className = cls;
+      span.textContent = text; // names are player input: never innerHTML
+      li.append(span);
+    }
+    return li;
+  }));
+  $('boardYou').textContent = !rows.length ? 'No scores yet. Be the first!'
+    : me && !rows.some(r => r.me) ? `You: #${me.rank} of ${me.of} · ${me.score.toLocaleString()}` : '';
+}
+function openName() {
+  setBack();
+  showScreen('nameScreen');
+  $('nameInput').value = account.name ?? '';
+  $('nameErr').textContent = '';
+  $('nameInput').focus({ preventScroll: true });
+}
+async function saveName() {
+  const err = await account.rename($('nameInput').value);
+  if (err) $('nameErr').textContent = err;
+  else showScreen(app.settingsFrom);
+}
+$('nameInput').addEventListener('keydown', e => { if (e.key === 'Enter') saveName(); });
+// After a cleared level or a Gauntlet: post the score if you're signed in, then show where you stand on that board.
+async function postScore(score, mode, line, label) {
+  if (!account.user) return;
+  const state = app.state;
+  $(line).textContent = 'Posting your score...';
+  markPosted(mode, score);
+  const ok = await account.post(score, mode);
+  syncSave();
+  const me = ok ? await account.standing(mode) : null;
+  if (app.state !== state) return;
+  $(line).textContent = me ? `${label}: #${me.rank} of ${me.of} players` : ok ? '' : "Offline: your score will post next time you're connected.";
 }
 
 // ---------- End of a level ----------
@@ -145,7 +248,9 @@ function levelCleared(s) {
   $('clearStars').innerHTML = starsHtml(b.stars);
   $('clearScore').textContent = `Level ${n} · Score ${b.score.toLocaleString()}`;
   $('clearBest').textContent = b.score > prevBest ? (prevBest ? 'New best score!' : '') : `Best: ${prevBest.toLocaleString()}`;
+  $('clearRank').textContent = '';
   showScreen('clear');
+  postScore(b.score, `level-${n}`, 'clearRank', `Level ${n} leaderboard`);
 }
 function levelFailed(s) {
   app.state = 'failed';
@@ -161,13 +266,16 @@ function gauntletOver(s) {
   app.state = 'over';
   $('overScore').textContent = `Score ${score.toLocaleString()}`;
   $('overText').textContent = `You reached level ${s.n}.` + (best ? ' New best!' : ` Best: ${gauntletBest.score.toLocaleString()} (level ${gauntletBest.level}).`);
+  $('overRank').textContent = '';
   showScreen('over');
+  postScore(score, 'gauntlet', 'overRank', 'Gauntlet leaderboard');
 }
 
 $('ui').addEventListener('click', e => {
   const btn = e.target.closest('button');
   if (!btn || !scene()) return;
   if (btn.dataset.level) return startLevel('levels', Number(btn.dataset.level));
+  if (btn.dataset.board) return openBoard(btn.dataset.board === 'gauntlet' ? 'gauntlet' : boardMode === 'gauntlet' ? app.level : boardMode);
   const action = btn.dataset.action;
   if (action === 'play') startLevel('levels', nextLevel());
   else if (action === 'levels') openLevels();
@@ -179,6 +287,13 @@ $('ui').addEventListener('click', e => {
   else if (action === 'menu') toMenu();
   else if (action === 'settings') openSettings();
   else if (action === 'back') showScreen(app.settingsFrom);
+  else if (action === 'board') openBoard();
+  else if (action === 'boardPrev') openBoard(boardMode - 1);
+  else if (action === 'boardNext') openBoard(boardMode + 1);
+  else if (action === 'signin') signIn();
+  else if (action === 'signout') account.signOut();
+  else if (action === 'rename') openName();
+  else if (action === 'saveName') saveName();
 });
 $('pauseBtn').addEventListener('click', pauseGame);
 $('swapBtn').addEventListener('click', () => app.state === 'playing' && scene()?.swap());
