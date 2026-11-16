@@ -9,7 +9,7 @@ const DEG = Math.PI / 180, FOV = 34;
 const TILT = 30 * DEG;  // the camera looks down at the board, leaning back this far from straight down
 const SWAP_PX = 86;     // screen kept clear at the bottom for the swap button
 // What the camera must always show (model coordinates): the play area plus room for the monsters and curbs.
-const FRAME = { x0: 0, x1: W, y0: PLAY.y0 - 80, y1: PLAY.y1 + 50 };
+const FRAME = { x0: -12, x1: W + 12, y0: PLAY.y0 - 80, y1: PLAY.y1 + 50 }; // (a monster at the very edge of PLAY still fits)
 const ROADS = [ // candy-cane curbs and the road's fill, one style per road
   { cane: [0xff5d8f, 0xffffff], fill: '#ffd6e5' },
   { cane: [0x2ec98a, 0xffffff], fill: '#d2f7e8' },
@@ -18,12 +18,13 @@ const ROADS = [ // candy-cane curbs and the road's fill, one style per road
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const wx = x => x - W / 2, wz = y => y - H / 2; // model x/y -> world x/z
+const clock = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 // ---------- Renderer, scene, camera, lights ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap; // (three 0.186 dropped PCFSoftShadowMap)
 renderer.domElement.id = 'view';
 document.body.prepend(renderer.domElement);
 const scene = new THREE.Scene();
@@ -179,7 +180,7 @@ class Play {
     this.mode = data?.mode || 'levels';
     this.n = data?.level || nextLevel();
     this.level = makeLevel(this.n);
-    this.board = new Board(this.level, { stars: data?.stars, score: data?.score });
+    this.board = new Board(this.level, { stars: data?.stars, score: data?.score, mode: this.mode });
     this.t = 0;                          // game time that stops while paused (update() isn't called then)
     this.intro = this.playing ? 1.3 : 0; // the level card shows before the chain starts
     this.cool = 0;                       // seconds until the next shot
@@ -226,7 +227,7 @@ class Play {
     if (!this.manual) this.render(); // (the playtest draws when it wants to)
     if (this.playing) {
       const roads = L.tracks.length === 1 ? '1 road' : `${L.tracks.length} roads`;
-      this.banner(`${this.mode === 'gauntlet' ? 'GAUNTLET · ' : ''}LEVEL ${this.n}`, 1300, `${L.name} · ${roads}`);
+      this.banner(`${this.mode === 'gauntlet' ? 'GAUNTLET · ' : ''}LEVEL ${this.n}`, 1300, `${L.name} · ${roads} · par ${clock(this.board.par)}`);
       jingle([523, 659, 784], 110);
     }
   }
@@ -239,7 +240,8 @@ class Play {
     if (b.next) st.push(`Next shot: ${POWER[b.next].name}`);
     if (b.slow > 0) st.push(`Syrup ${Math.ceil(b.slow)}`);
     if (b.laser > 0) st.push(`Laser ${Math.ceil(b.laser)}`);
-    const text = st.length ? st.join(' · ') : `COMBO METER ${b.meter}/${b.meterNeed}`, key = `${this.n}|${b.score}|${b.stars}|${text}`;
+    const text = st.length ? st.join(' · ') : `COMBO METER ${b.meter}/${b.meterNeed}`, time = Math.floor(b.time);
+    const key = `${this.n}|${b.score}|${b.stars}|${text}|${time}`;
     if (key === this.hudKey) return;
     this.hudKey = key;
     $('hudLevel').textContent = this.label();
@@ -247,6 +249,8 @@ class Play {
     $('hudStars').innerHTML = starsHtml(b.stars);
     $('meterFill').style.width = `${Math.min(1, b.meter / b.meterNeed) * 100}%`;
     $('meterText').textContent = text;
+    $('hudTime').textContent = `${clock(time)} · par ${clock(b.par)}`;
+    $('hudTime').classList.toggle('over', b.time > b.par);
   }
 
   // A big message in the middle of the screen (and an optional smaller line under it).
@@ -291,10 +295,10 @@ class Play {
     this.aim = this.down = null;
     const b = this.board;
     if (won) {
-      const bonus = b.stars * RULES.starBonus;
-      b.score += bonus;
+      const bonus = b.clearBonus();
+      b.addScore(bonus.stars + bonus.ace);
       this.updateHud();
-      this.banner(b.stars === 3 ? 'PERFECT!' : 'LEVEL CLEAR!', 1300, `+${bonus} star bonus`);
+      this.banner(b.stars === 3 ? 'PERFECT!' : 'LEVEL CLEAR!', 1300, `+${bonus.stars} star bonus` + (bonus.ace ? ` · +${bonus.ace} ace time!` : ''));
       jingle([523, 659, 784, 1046, 1318]);
       this.pending = { t: 1.5, fn: () => this.mode === 'gauntlet' ? startLevel('gauntlet', this.n + 1, { stars: b.stars, score: b.score }) : levelCleared(this) };
     } else {
@@ -364,7 +368,7 @@ class Play {
       this.shots.push({ obj, c, kind, x: sx, y: sy, lob: { from: { x: sx, y: sy }, to: { x: target.x, y: target.y }, ch: target.ch, orb: target.orb, tap: { x, y }, t: 0, dur: 0.3 } });
       beep(988, 70, 0.04);
     } else {
-      this.shots.push({ obj, c, kind, x: sx, y: sy, vx: Math.cos(a) * RULES.shotSpeed, vy: Math.sin(a) * RULES.shotSpeed });
+      this.shots.push({ obj, c, kind, x: sx, y: sy, vx: Math.cos(a) * RULES.shotSpeed, vy: Math.sin(a) * RULES.shotSpeed, inGap: -1, gaps: 0 });
       beep(660, 40, 0.035);
     }
     this.kick = 0.12;
@@ -387,8 +391,11 @@ class Play {
           s.x += s.vx * dt / steps;
           s.y += s.vy * dt / steps;
           const hit = this.board.nearest(s.x, s.y, D * 0.85);
-          if (hit) { s.done = true; this.strike(s, hit.ch, hit.i, s.x, s.y); }
-          else if (s.x < -D || s.x > W + D || s.y < -D || s.y > H + D) s.done = true;
+          if (hit) { s.done = true; this.strike(s, hit.ch, hit.i, s.x, s.y); continue; }
+          if (s.x < -D || s.x > W + D || s.y < -D || s.y > H + D) { s.done = true; continue; }
+          const gap = this.board.gapAt(s.x, s.y); // count the gaps it flies right through (in one side, out the other)
+          if (s.inGap >= 0 && gap !== s.inGap) s.gaps++;
+          s.inGap = gap;
         }
       }
       s.obj.root.position.set(wx(s.x), h, wz(s.y));
@@ -411,7 +418,7 @@ class Play {
   strike(s, ch, i, x, y) {
     const at = pointAt(ch.track, ch.orbs[i].s);
     this.hits = (this.hits || 0) + 1;
-    const orb = this.board.hit(ch, i, x, y, s.c, s.kind);
+    const orb = this.board.hit(ch, i, x, y, s.c, s.kind, s.gaps || 0);
     if (orb) { orb.from = { x: s.x, y: s.y, t: this.t }; beep(330, 40, 0.03); }
     if (s.kind === 'bomb') {
       boom(280, 0.12);
@@ -449,6 +456,13 @@ class Play {
         beep(110, 220, 0.07, 'sawtooth');
         Object.assign(cam, { shake: 0.2, amp: 12 });
         floatText(h.x, h.y - 90, this.board.stars > 0 ? 'CHOMP! -1 ★' : 'CHOMP!', '#8e5cf7', 34);
+        this.updateHud();
+      } else if (e.type === 'bonus') { // a gap shot
+        floatText(e.x, e.y - 95, `${e.label} +${e.points}`, '#2ec98a', 32);
+        jingle([880, 1175], 60);
+      } else if (e.type === 'star') { // Gauntlet: enough points to win back a star
+        floatText(W / 2, H * 0.3, 'EXTRA STAR! ★', '#ffb020', 44);
+        jingle([784, 988, 1175, 1568], 80);
         this.updateHud();
       } else if (e.type === 'power') { // a combo filled the meter: a random power-up, at once
         const p = POWER[e.id];

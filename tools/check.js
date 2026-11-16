@@ -7,7 +7,7 @@ const vm = require('vm');
 // Load the game's plain scripts the way the page does: in order, sharing globals.
 for (const f of ['data.js', 'levels.js', 'chain.js']) vm.runInThisContext(fs.readFileSync(path.join(__dirname, '..', 'js', f), 'utf8'), { filename: f });
 const G = name => vm.runInThisContext(name);
-const [makeLevel, levelProblems, Board, pointAt, D, JAW, STEP, RULES] = ['makeLevel', 'levelProblems', 'Board', 'pointAt', 'D', 'JAW', 'STEP', 'RULES'].map(G);
+const [makeLevel, levelProblems, Board, pointAt, D, JAW, STEP, RULES, spec, rollQueue, makeRng] = ['makeLevel', 'levelProblems', 'Board', 'pointAt', 'D', 'JAW', 'STEP', 'RULES', 'spec', 'rollQueue', 'makeRng'].map(G);
 
 let failed = 0;
 const check = (name, ok, detail = '') => {
@@ -171,6 +171,61 @@ const run = (b, secs) => { for (let i = 0; i < secs * 60; i++) b.step(1 / 60); }
   b.apply('rewind');
   run(b, 3);
   check('Taffy Pull on an empty road does not stop candies coming', ch.orbs.length > 3, `${ch.orbs.length} candies`);
+}
+
+// ---------- Tuning from the Zuma Deluxe research ----------
+{
+  const by = k => levels.find(L => L.n > 10 && L.tracks.length === k);
+  const sp = k => { const L = by(k), b = new Board(L); return b.speed / L.spec.speed; };
+  check('chains roll slower on 2- and 3-road levels', Math.abs(sp(2) - 0.8) < 1e-9 && Math.abs(sp(3) - 0.7) < 1e-9, `${sp(2)}, ${sp(3)}`);
+  const dips = [5, 21, 51].map(n => spec(n).speed < spec(n - 1).speed && spec(n + 5).speed > spec(n - 1).speed);
+  check('chains slow down for a few levels when a new color arrives (5, 21, 51)', dips.every(Boolean), dips.join(','));
+  const repeats = n => { const q = rollQueue(makeRng(9), { ...spec(n), jaw: 0, colors: 6 }, 4000); return q.filter((c, i) => i && c === q[i - 1]).length / q.length; };
+  check('later levels have shorter runs of one color', repeats(1) > repeats(100) + 0.1, `${repeats(1).toFixed(2)} -> ${repeats(100).toFixed(2)}`);
+}
+{
+  const g = new Board(makeLevel(1), { mode: 'gauntlet', stars: 1, score: RULES.starEvery - 10 });
+  g.addScore(20);
+  const lv = new Board(makeLevel(1), { stars: 1, score: RULES.starEvery - 10 });
+  lv.addScore(20);
+  const full = new Board(makeLevel(1), { mode: 'gauntlet', stars: 3, score: RULES.starEvery - 10 });
+  full.addScore(20);
+  check('Gauntlet: every 50,000 points wins back a star (never more than 3, and not in Levels mode)', g.stars === 2 && g.events.some(e => e.type === 'star') && lv.stars === 1 && full.stars === 3, `${g.stars} ${lv.stars} ${full.stars}`);
+}
+{
+  const b = new Board(makeLevel(1));
+  b.time = b.par - 1;
+  const ace = b.clearBonus().ace;
+  b.time = b.par + 1;
+  check('clearing within par time scores the ace bonus', b.par > 20 && ace === RULES.aceBonus && b.clearBonus().ace === 0, `par ${b.par}`);
+}
+{
+  const { b, ch } = boardWith([4, 2, 1, 1, 5]);
+  b.chains[0].samples = Array.from({ length: 160 }, (_, i) => ({ x: i * 24, y: 500, s: i * 24 }));
+  for (const o of ch.orbs.slice(2)) o.s += 300; // a gap between the 2 and the 1s
+  const mid = (ch.orbs[1].s + ch.orbs[2].s) / 2;
+  check('a gap in a chain is found where the road crosses it', b.gapAt(mid, 500 + 10) === 0 && b.gapAt(mid, 500 + 2 * D) === -1 && b.gapAt(100, 500) === -1);
+  const p = pointAt(ch.track, ch.orbs[2].s);
+  b.hit(ch, 2, p.x - 10, p.y, 1, null, 1); // through one gap, then 1,1,1 pops
+  const bonus = b.events.find(e => e.type === 'bonus');
+  check('a shot through a gap that makes a match scores the gap bonus', bonus?.points === RULES.gapBonus && b.score === 30 + RULES.gapBonus, `${b.score}`);
+  const { b: b2, ch: c2 } = boardWith([2, 3]);
+  b2.hit(c2, 0, 190, 500, 1, null, 1);
+  check('...but not when it makes no match', !b2.events.some(e => e.type === 'bonus'));
+}
+{
+  const rev = levels.filter(L => L.n <= 100 && L.rev), mid = { x: G('W') / 2, y: G('H') / 2 };
+  const out = L => { const t = L.tracks[0], j = { x: t.pts[0], y: t.pts[1] }, h = L.holes[0]; return Math.hypot(j.x - mid.x, j.y - mid.y) < Math.hypot(h.x - mid.x, h.y - mid.y); };
+  check('some later swirls and donuts run backwards: from a jar in the middle out to a monster at the edge', rev.length >= 3 && rev.every(L => L.n >= 40 && /Inside-Out/.test(L.name) && out(L)), rev.map(L => L.n).join(','));
+}
+
+// ---------- The browser-only modules at least parse ----------
+// (plain `node --check` passes any file with `import` in it without looking; --input-type=module really parses it)
+for (const f of ['game.js', 'art.js']) {
+  try {
+    require('child_process').execFileSync(process.execPath, ['--input-type=module', '--check'], { input: fs.readFileSync(path.join(__dirname, '..', 'js', f)), stdio: 'pipe' });
+    check(`js/${f} parses`, true);
+  } catch (e) { check(`js/${f} parses`, false, String(e.stderr).split(/\r?\n/).slice(0, 4).join(' ')); }
 }
 
 // ---------- Contact sheet: every level on one page, to look over by eye ----------

@@ -23,20 +23,23 @@ function rollQueue(R, sp, count) {
   for (let i = 0; i < count; i++) {
     if (i > 3 && sp.jaw && q[i - 1] !== JAW && R.chance(sp.jaw)) { q.push(JAW); continue; }
     const prev = q[i - 1];
-    q.push(prev >= 0 && R.chance(0.42) ? prev : R.int(0, sp.colors - 1));
+    q.push(prev >= 0 && R.chance(sp.group ?? 0.42) ? prev : R.int(0, sp.colors - 1));
   }
   return q;
 }
 
 class Board {
-  // opts: stars and score carried in (Gauntlet), speed override (tests).
+  // opts: stars and score carried in (Gauntlet), mode ('levels' | 'gauntlet'), speed override (tests).
   constructor(level, opts = {}) {
     this.level = level;
     this.spec = level.spec;
     this.rng = makeRng(level.seed ^ 0x5bd1e995);
-    this.speed = opts.speed ?? this.spec.speed;
+    this.speed = opts.speed ?? this.spec.speed * RULES.roadSpeed[level.tracks.length - 1];
     this.stars = opts.stars ?? 3;
     this.score = opts.score ?? 0;
+    this.gauntlet = opts.mode === 'gauntlet';
+    this.nextStarAt = (Math.floor(this.score / RULES.starEvery) + 1) * RULES.starEvery;
+    this.time = 0;         // seconds of play (not counting the level card or pauses)
     this.chainN = 0;       // chain reactions set off by the last shot (1+ makes it a combo)
     this.meter = 0;        // chain reactions towards the next power-up (plain matches don't count)
     this.meterNeed = RULES.meterFirst;
@@ -46,7 +49,8 @@ class Board {
     this.next = null;      // 'bomb' | 'zap': what the next shot is
     this.events = [];      // for the scene: pops, eats, inserts (it drains this every frame)
     this.dead = false;
-    this.chains = level.tracks.map(track => ({ track, orbs: [], queue: rollQueue(this.rng, this.spec, track.count), rollIn: true, retreat: 0, retreatV: 0 }));
+    this.chains = level.tracks.map(track => ({ track, orbs: [], queue: rollQueue(this.rng, this.spec, track.count), rollIn: true, retreat: 0, retreatV: 0, samples: samplesOf(track) }));
+    this.par = Math.round(RULES.parBase + RULES.parPerCandy * this.chains.reduce((a, ch) => a + ch.queue.length, 0));
     this.held = [this.rollHeld(), this.rollHeld()];
     this.sel = 0;
   }
@@ -55,6 +59,7 @@ class Board {
   danger(ch) { return ch.orbs.length ? Math.max(0, ch.orbs[ch.orbs.length - 1].s / ch.track.len) : 0; }
 
   step(dt) {
+    this.time += dt;
     this.slow = Math.max(0, this.slow - dt);
     this.laser = Math.max(0, this.laser - dt);
     for (const ch of this.chains) this.stepChain(ch, dt);
@@ -123,10 +128,36 @@ class Board {
     this.emptied(ch);
     if (reaction) { this.chainN++; this.meter++; } // a combo: one shot, more than one pop
     const points = popped.length * 10 * (1 + this.chainN);
-    this.score += points;
+    this.addScore(points);
     this.events.push({ type: 'pop', ch, orbs: popped, color: c, points, chain: this.chainN });
     if (this.meter >= this.meterNeed) this.award();
     return popped.length;
+  }
+
+  // All points go through here. In the Gauntlet, every RULES.starEvery points wins back a lost star.
+  addScore(points) {
+    this.score += points;
+    while (this.gauntlet && this.score >= this.nextStarAt) {
+      this.nextStarAt += RULES.starEvery;
+      if (this.stars < 3) { this.stars++; this.events.push({ type: 'star' }); }
+    }
+  }
+  // Clearing a level: points for every star left, and more for clearing it within par time.
+  clearBonus() {
+    return { stars: this.stars * RULES.starBonus, ace: this.time <= this.par ? RULES.aceBonus : 0 };
+  }
+  // The road whose chain has a gap at (x, y), or -1: a candy on its way through the gap isn't touching any candy
+  // (or it would have hit one), and there are candies on the road both behind and ahead of it.
+  gapAt(x, y) {
+    for (let c = 0; c < this.chains.length; c++) {
+      const ch = this.chains[c];
+      let at = null, best = 0.7 * D;
+      for (const p of ch.samples) { const d = Math.hypot(p.x - x, p.y - y); if (d < best) { best = d; at = p; } }
+      if (!at) continue;
+      const o = ch.orbs, k = o.findIndex(b => b.s > at.s);
+      if (k > 0 && o[k - 1].s >= 0 && o[k].s - o[k - 1].s > TOUCH) return c;
+    }
+    return -1;
   }
 
   // You popped every candy on the road but the jar has more: they rush out like at the start (no waiting for a crawl).
@@ -134,8 +165,9 @@ class Board {
     if (ch.queue.length && !ch.orbs.some(b => b.s > 0)) ch.rollIn = true;
   }
 
-  // A shot (color c) reached candy i of chain ch at (x, y). kind: null, 'bomb' or 'zap'. Returns the new candy, if any.
-  hit(ch, i, x, y, c, kind) {
+  // A shot (color c) reached candy i of chain ch at (x, y). kind: null, 'bomb' or 'zap'. gaps: how many gaps in
+  // chains it flew right through on the way. Returns the new candy, if any.
+  hit(ch, i, x, y, c, kind, gaps = 0) {
     this.chainN = 0;
     const orb = ch.orbs[i], p = pointAt(ch.track, orb.s);
     if (kind === 'bomb' || kind === 'zap') {
@@ -145,7 +177,13 @@ class Board {
     }
     // which side of the candy did it hit, along the road?
     const side = (x - p.x) * Math.cos(p.a) + (y - p.y) * Math.sin(p.a) > 0 ? 1 : -1;
-    return this.insert(ch, i, c, side);
+    const added = this.insert(ch, i, c, side);
+    if (this.matched && gaps) { // a gap shot: it went through a gap and still made a match
+      const points = RULES.gapBonus * gaps;
+      this.addScore(points);
+      this.events.push({ type: 'bonus', label: gaps > 1 ? `GAP SHOT x${gaps}` : 'GAP SHOT', points, x, y });
+    }
+    return added;
   }
 
   insert(ch, i, c, side) {
@@ -156,7 +194,7 @@ class Board {
     this.resolve(o);
     this.chainN = 0;
     this.events.push({ type: 'insert', ch, orb });
-    this.matchAt(ch, k, false);
+    this.matched = this.matchAt(ch, k, false) > 0;
     return orb;
   }
 
@@ -175,7 +213,7 @@ class Board {
     ch.orbs = ch.orbs.filter(b => !gone.has(b));
     this.emptied(ch);
     const points = popped.length * 10;
-    this.score += points;
+    this.addScore(points);
     this.events.push({ type: 'pop', ch, orbs: popped, color: popped[0].c, points, chain: 0, power: true });
   }
 

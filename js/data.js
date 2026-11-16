@@ -45,14 +45,23 @@ const RULES = {
   meterFirst: 1,       // chain reactions for the first power-up of a level...
   meterStep: 1,        // ...and each pick after that needs one more
   starBonus: 500,      // points per star left when a level is cleared
+  roadSpeed: [1, 0.8, 0.7], // chains roll slower on levels with 2 or 3 roads (more to watch at once)
+  starEvery: 50000,    // Gauntlet: every this many points wins back a lost star (up to 3)
+  gapBonus: 100,       // a shot that passes right through a gap in a chain, then makes a match
+  parBase: 12, parPerCandy: 0.9, // par time (s) = base + per candy in the level...
+  aceBonus: 1000,      // ...and clearing it within par ("ace time") scores this
 };
 
 // The difficulty curve: everything a level asks of you, from its number. Stops rising after level 120.
+// A new candy color arrives at levels 5, 21 and 51; the chains slow down 15% then, easing back over 5 levels.
+const NEW_COLOR = [5, 21, 51];
 function spec(n) {
   const k = Math.min(n, 120) - 1;
+  const dip = NEW_COLOR.reduce((f, a) => n >= a && n < a + 5 ? 1 - 0.15 * (1 - (n - a) / 5) : f, 1);
   return {
     colors: n <= 4 ? 3 : n <= 20 ? 4 : n <= 50 ? 5 : 6,
-    speed: 30 * (1 + 0.006 * k),             // px/s the chain rolls
+    speed: 30 * (1 + 0.006 * k) * dip,       // px/s the chain rolls (one road; more roads roll slower)
+    group: 0.5 - 0.2 * k / 119,              // chance a candy repeats the color before it: runs get shorter later
     count: Math.round(30 + k * 0.5),         // candies in the whole level (spread over its roads)
     jaw: n < 25 ? 0 : Math.min(0.12, 0.03 + (n - 25) * 0.001), // share of jawbreakers
     wild: n <= 3 ? 0 : 0.04,                 // chance a candy you're handed is a rainbow

@@ -184,11 +184,16 @@ async function run(browser, name, options, full) {
   });
   check(`${name}: a combo gives a random power-up at once, no picking (and says which)`, combo.state === 'playing' && !!combo.power && combo.banner === combo.expect, JSON.stringify(combo));
   await shot('09-power');
+  check(`${name}: the HUD shows the time and par`, await page.evaluate(() => /\d:\d\d · par \d:\d\d/.test(document.getElementById('hudTime').textContent)));
+
   const power = await page.evaluate(() => {
+    startLevel('levels', 30); // a fresh level: the combo's random power-up (Taffy Pull, say) may have emptied the roads
+    for (let i = 0; i < 60 * 8; i++) game.update(1 / 60);
     const s = scene(), b = s.board, res = {};
+    b.meterNeed = Infinity; // (no random power-ups from chain reactions in the middle of these checks)
     b.slow = b.laser = 0; b.next = null;
     // aim (with the laser, to land exactly) at a candy well inside the screen
-    const pickOrb = () => { for (const ch of b.chains) for (const o of ch.orbs) if (o.s > ch.track.len * 0.1 && o.s < ch.track.len * 0.9 && o.c >= 0) return { ch, o, p: pointAt(ch.track, o.s) }; };
+    const pickOrb = () => { for (const ch of b.chains) for (const o of ch.orbs) if (o.s > 2 * D && o.s < ch.track.len - 2 * D && o.c >= 0) return { ch, o, p: pointAt(ch.track, o.s) }; };
     const fire = t => { s.cool = 0; b.laser = 1; s.fireAt(t.p.x, t.p.y); __step(30); b.laser = 0; };
     let t = pickOrb();
     const near = b.chains.flatMap(ch => ch.orbs.filter(o => o.s >= 0 && Math.hypot(pointAt(ch.track, o.s).x - t.p.x, pointAt(ch.track, o.s).y - t.p.y) < D * 0.9));
@@ -222,6 +227,41 @@ async function run(browser, name, options, full) {
   for (const [k, ok] of Object.entries(power)) check(`${name}: power-up works: ${k}`, ok);
   await page.evaluate(() => { scene().aimAt(scene().board.chains[0].orbs.length ? pointAt(scene().board.chains[0].track, scene().board.chains[0].orbs.at(-1).s) : { x: 360, y: 640 }); scene().board.laser = 10; __step(1); });
   await shot('10-laser');
+
+  // ---------- A gap shot: a straight shot through a gap in a chain, then a match ----------
+  const gapShot = await page.evaluate(() => {
+    for (let t = 0; t < 30; t++) {
+      startLevel('levels', 12);
+      for (let i = 0; i < 60 * 6; i++) game.update(1 / 60);
+      const s = scene(), b = s.board, m = s.level.launcher, chains = b.chains.filter(ch => ch.orbs.length > 8);
+      Object.assign(b, { speed: 0, meterNeed: Infinity, next: null, laser: 0 });
+      s.cool = 0;
+      const ch = chains[t % chains.length], o = ch.orbs, k = o.length - 2 - 2 * Math.floor(t / chains.length);
+      if (k < 2 || o[k].s < 0) continue;
+      const target = o[k], keep = new Set([o[k - 1], target, o[k + 1]]), T = pointAt(ch.track, target.s);
+      // open the way: take out every candy near the line from the machine to the target
+      const off = q => { const dx = T.x - m.x, dy = T.y - m.y, u = Math.max(0, Math.min(1, ((q.x - m.x) * dx + (q.y - m.y) * dy) / (dx * dx + dy * dy))); return Math.hypot(m.x + u * dx - q.x, m.y + u * dy - q.y); };
+      let opened = 0;
+      for (const c2 of b.chains) for (let j = c2.orbs.length - 1; j >= 0; j--) {
+        const q = c2.orbs[j];
+        if (keep.has(q) || q.s < 0 || off(pointAt(c2.track, q.s)) > 1.3 * D) continue;
+        c2.orbs.splice(j, 1);
+        opened++;
+        if (c2.orbs[j] && !keep.has(c2.orbs[j])) c2.orbs[j].c = JAW; // never matches, so the opening stays open
+      }
+      if (!opened) continue;
+      target.c = o[k + 1].c = 0;
+      b.held[b.sel] = 0;
+      const score = b.score;
+      document.getElementById('floats').replaceChildren();
+      s.fireAt(T.x, T.y);
+      for (let f = 0; f < 60 && s.shots.length; f++) game.update(1 / 60);
+      game.render();
+      if (document.getElementById('floats').textContent.includes('GAP SHOT')) return { try: t, gained: b.score - score };
+    }
+    return null;
+  });
+  check(`${name}: a straight shot through a gap in a chain that makes a match scores a gap bonus`, gapShot && gapShot.gained >= 100, JSON.stringify(gapShot));
 
   // ---------- Gauntlet ----------
   await page.evaluate(() => toMenu());

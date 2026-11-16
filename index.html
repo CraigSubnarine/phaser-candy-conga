@@ -58,6 +58,8 @@
   #hudScore { color: var(--pink); font-size: 1rem; }
   #hudStars { font-size: 1.35rem; color: var(--gold); line-height: 1; letter-spacing: .05em; }
   #hudStars .off { color: #ead0dc; }
+  #hudTime { font-size: .85rem; color: var(--mint); font-variant-numeric: tabular-nums; }
+  #hudTime.over { color: var(--muted); }
   .meter { position: relative; height: 18px; margin-top: 6px; border-radius: 9px; background: #f3d6e3; overflow: hidden; }
   #meterFill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--pink); border-radius: 9px; transition: width .2s; }
   #meterText { position: relative; display: block; text-align: center; font-size: .72rem; font-weight: 700; line-height: 18px; letter-spacing: .04em; }
@@ -115,7 +117,7 @@
 
   <section class="screen" id="gauntletInfo" hidden>
     <h2>GAUNTLET</h2>
-    <p>Every level, one after another, with just <b>3 stars</b> for the whole climb. Every candy a monster eats costs one. How far can you get?</p>
+    <p>Every level, one after another, with just <b>3 stars</b> for the whole climb. Every candy a monster eats costs one, and every 50,000 points wins one back. How far can you get?</p>
     <p id="gauntletBest"></p>
     <button class="primary" data-action="startGauntlet">Start the climb</button>
     <button data-action="menu">Back</button>
@@ -169,7 +171,7 @@
 </div>
 <div id="hud" style="visibility: hidden">
   <div class="hudRow"><span id="hudLevel"></span><span id="hudStars"></span></div>
-  <div class="hudRow"><span id="hudScore"></span></div>
+  <div class="hudRow"><span id="hudScore"></span><span id="hudTime"></span></div>
   <div class="meter"><i id="meterFill"></i><span id="meterText"></span></div>
 </div>
 <div id="banner" hidden><b id="bannerTitle"></b><span id="bannerSub"></span></div>

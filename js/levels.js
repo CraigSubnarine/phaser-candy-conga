@@ -200,7 +200,10 @@ function layoutChoice(n) {
     let fam = R.pick(list);
     const prev = choices[m - 2];
     if (prev && prev.count === count && prev.fam === fam) fam = list[(list.indexOf(fam) + 1) % list.length];
-    choices[m - 1] = { count, fam };
+    // From level 40 most swirls and donuts run backwards: out of a jar in the middle to a monster at the edge,
+    // so the candies nearest the monster are the hardest to reach.
+    const rev = m >= 40 && (fam === 'swirl' || fam === 'donut') && R.chance(0.6);
+    choices[m - 1] = { count, fam, rev };
   }
   return choices[n - 1];
 }
@@ -233,7 +236,9 @@ function regionsFor(count, R, symmetric) {
 function attempt(R, ch) {
   if (ch.count === 1) {
     const poly = FAMILIES[ch.fam].make(PLAY, R);
-    return poly && { polys: [poly], holes: [poly[poly.length - 1]], holeOf: [0], name: FAMILIES[ch.fam].name, fams: [ch.fam] };
+    if (poly && ch.rev) poly.reverse(); // backwards: the monster sits at the edge, where the jar would be
+    const name = (ch.rev ? 'Inside-Out ' : '') + FAMILIES[ch.fam].name.replace(/^Lollipop /, '');
+    return poly && { polys: [poly], holes: [poly[poly.length - 1]], holeOf: [0], name: ch.rev ? name : FAMILIES[ch.fam].name, fams: [ch.fam], rev: !!ch.rev };
   }
   const twin = R.chance(0.45), shared = R.chance(0.5);
   const { regs, axis, hole } = regionsFor(ch.count, R, twin);
@@ -369,7 +374,7 @@ function makeLevel(n) {
       const pts = resample(p);
       return { pts, len: (pts.length / 2 - 1) * STEP, hole: lay.holeOf[i], fam: lay.fams[i] };
     });
-    const L = { n, name: lay.name, spec: sp, seed: levelSeed(n), tracks, holes: lay.holes.map(([x, y]) => ({ x, y })), fallback: tries >= 50 };
+    const L = { n, name: lay.name, spec: sp, seed: levelSeed(n), tracks, holes: lay.holes.map(([x, y]) => ({ x, y })), rev: !!lay.rev, fallback: tries >= 50 };
     if (levelProblems(L, true).length) continue;
     L.launcher = placeLauncher(L, R);
     if (levelProblems(L).length) continue;

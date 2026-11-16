@@ -16,6 +16,7 @@ No build step and no asset files: the 3D models are built from shapes in code, t
 - **Your candies:** you hold two, in random colors (only colors still on the board), and swap between them. Now and then you get a rainbow candy that matches anything.
 - **Stars:** you start with 3. A candy reaching a monster costs a star, and the chain is pushed back. With no stars left, it's over.
 - **Jawbreakers** (from level 25): grey candies that never match. They crack when a match pops right next to them.
+- **Bonuses:** a **gap shot** (a shot that flies right through a gap in a chain, then makes a match) scores +100 per gap. Every level has a **par time** (12 s + 0.9 s per candy, shown in the HUD); clear it within par for +1000 **ace time**, on top of +500 per star left.
 - **Power-ups:** combos fill the combo meter; plain matches don't. Each chain reaction is one notch: 1 for the first power-up of a level, then 2, then 3... When it's full you get a random power-up straight away (never the same one twice running), and its name flashes up. It lasts until the end of the level:
   - **Cherry Bomb:** your next shot explodes.
   - **Pop Rocks:** your next shot zaps every candy of the color it hits.
@@ -27,20 +28,20 @@ No build step and no asset files: the 3D models are built from shapes in code, t
 ## Modes
 
 - **Levels:** at least 100 levels (the list grows past 100 as you unlock more). Each starts with 3 stars, and the stars you keep are its rating. Clear one to unlock the next. Best score and stars per level are saved.
-- **Gauntlet:** every level, one after another, with 3 stars for the whole climb. Your score and the level you reach are your best. This is the leaderboard mode.
+- **Gauntlet:** every level, one after another, with 3 stars for the whole climb. Every 50,000 points wins back a lost star (up to 3). Your score and the level you reach are your best. This is the leaderboard mode.
 
 ## Levels are generated
 
 `js/levels.js` builds level *n* from its own seed, so a level is the same for everyone.
-- **Shapes:** Lollipop Swirl (spiral), Donut Loop (rounded-square laps), Ribbon Candy (back-and-forth lanes), Taffy Wave (wobbly lanes) and Gummy Trail (a random walk smoothed into curves).
+- **Shapes:** Lollipop Swirl (spiral), Donut Loop (rounded-square laps; from level 40 most swirls and donuts run Inside-Out, from a jar in the middle to a monster at the edge), Ribbon Candy (back-and-forth lanes), Taffy Wave (wobbly lanes) and Gummy Trail (a random walk smoothed into curves).
 - **Roads:** from level 10 a level can have 2 roads, from level 35 up to 3. They sit in split regions, sometimes as mirror-image twins, and sometimes run into one shared monster.
 - **The gumball machine** goes wherever it's clear of every road and sees the most of them.
 - **Rules:** every layout is checked: roads stay on screen, never touch themselves or each other, have no tight kinks, and keep jars, monsters and the machine apart. A layout that fails is thrown away and another is tried.
-- **Difficulty:** `spec(n)` in `js/data.js` sets colors (3 → 6), chain speed, candy count, jawbreakers and rainbow chance, rising until level 120.
+- **Difficulty:** `spec(n)` in `js/data.js` sets colors (3 → 6), chain speed, candy count, jawbreakers, rainbow chance and how often a candy repeats the color before it (50% → 30%: shorter runs later), rising until level 120. Chains roll 20% slower on 2-road levels and 30% slower on 3-road ones, and 15% slower for a few levels whenever a new color arrives (levels 5, 21, 51). These tweaks came from Zuma Deluxe's level tables.
 
 ## Replay and competition hooks
 
-- A score always: candies popped, multiplied by how deep in the combo they popped, plus a star bonus per level.
+- A score always: candies popped, multiplied by how deep in the combo they popped, plus gap-shot, ace-time and star bonuses.
 - Star ratings on 100+ levels, and a running total on the main menu.
 - Gauntlet: an endless climb through every level with one set of stars (best score + level saved).
 - Seeded levels: everyone gets the same level *n*, ready for per-level and Gauntlet leaderboards.
